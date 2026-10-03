@@ -1,0 +1,78 @@
+# =============================================================
+# render.yaml - Infrastructure as Code per Render (Blueprint)
+# Docs: https://render.com/docs/blueprint-spec
+#
+# Dashboard Render -> New -> Blueprint -> seleziona questo repo.
+# Render legge questo file e crea automaticamente il Web Service.
+# =============================================================
+services:
+  - type: web
+    name: quant-trading-system
+    runtime: python
+    plan: free                  # "starter" o superiore per un bot sempre attivo (il free va in sleep)
+    region: frankfurt           # oregon | ohio | virginia | frankfurt | singapore
+    branch: main
+    autoDeploy: true            # redeploy automatico a ogni push su `main`
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    # Render inietta la variabile PORT (default 10000): la usiamo con fallback.
+    startCommand: uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000} --proxy-headers --forwarded-allow-ips='*'
+    healthCheckPath: /health
+    envVars:
+      # --- Runtime ---------------------------------------------------
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+
+      # --- Sicurezza: chiave per gli endpoint di controllo -----------
+      # Render genera un valore casuale; lo trovi in Environment.
+      - key: CONTROL_API_KEY
+        generateValue: true
+
+      # --- Dati e strategia ------------------------------------------
+      - key: DATA_SOURCE
+        value: yahoo            # "mock" per dati sintetici senza rete
+      - key: SYMBOL
+        value: SPY
+      - key: DATA_PERIOD
+        value: 2y
+      - key: DATA_INTERVAL
+        value: 1d
+      - key: SHORT_WINDOW
+        value: "20"
+      - key: LONG_WINDOW
+        value: "50"
+      - key: INITIAL_CAPITAL
+        value: "10000"
+      - key: FEE_BPS
+        value: "5"
+      - key: TRADE_QUANTITY
+        value: "10"
+
+      # --- Bot -------------------------------------------------------
+      - key: LOOP_INTERVAL_SECONDS
+        value: "300"
+      - key: AUTO_START_BOT
+        value: "false"
+
+      # --- Broker ----------------------------------------------------
+      - key: BROKER
+        value: paper            # paper | alpaca | ccxt
+      # Segreti: `sync: false` => Render li chiede nella dashboard al
+      # primo deploy e NON vengono mai salvati nel repository.
+      - key: ALPACA_API_KEY
+        sync: false
+      - key: ALPACA_SECRET_KEY
+        sync: false
+      - key: ALPACA_BASE_URL
+        value: https://paper-api.alpaca.markets
+      - key: CCXT_EXCHANGE
+        value: binance
+      - key: CCXT_API_KEY
+        sync: false
+      - key: CCXT_SECRET
+        sync: false
+      - key: CCXT_SANDBOX
+        value: "true"

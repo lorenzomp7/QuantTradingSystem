@@ -1,0 +1,4 @@
+# Dipendenze per sviluppo e test (non installate su Render)
+-r requirements.txt
+pytest>=8.0
+httpx>=0.27

@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QuantTradingSystem</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#0f1419; --card:#1a2029; --fg:#e6e9ed; --muted:#8b95a1; --accent:#3b82f6;
+          --green:#22c55e; --red:#ef4444; --border:#2a3240; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:16px; border-bottom:1px solid var(--border); display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; }
+  h1 { font-size:20px; margin:0; } h2 { font-size:15px; margin:0 0 12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  main { padding:16px; display:grid; gap:16px; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); max-width:1400px; margin:0 auto; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; min-width:0; }
+  .wide { grid-column:1/-1; }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:6px 12px; font-size:14px; }
+  .kv span:nth-child(odd) { color:var(--muted); }
+  button { background:var(--accent); color:#fff; border:0; border-radius:6px; padding:8px 14px; cursor:pointer; font-size:14px; }
+  button.secondary { background:#374151; } button.danger { background:var(--red); }
+  input { background:#0b0f14; color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:7px 9px; font-size:14px; width:100%; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:end; }
+  .row label { font-size:12px; color:var(--muted); display:flex; flex-direction:column; gap:4px; flex:1 1 90px; }
+  .badge { padding:3px 10px; border-radius:99px; font-size:12px; font-weight:600; }
+  .on { background:rgba(34,197,94,.15); color:var(--green); } .off { background:rgba(239,68,68,.15); color:var(--red); }
+  pre { background:#0b0f14; border-radius:6px; padding:10px; font-size:12px; max-height:320px; overflow:auto; margin:0; white-space:pre-wrap; word-break:break-word; }
+  .metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px; margin:12px 0; }
+  .metric { background:#0b0f14; border-radius:6px; padding:8px; } .metric b { display:block; font-size:18px; } .metric small { color:var(--muted); }
+  #msg { font-size:13px; color:var(--muted); min-height:18px; margin-top:8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📈 QuantTradingSystem <span id="badge" class="badge off">—</span></h1>
+  <div style="flex:1 1 220px; max-width:320px;"><input id="apikey" type="password" placeholder="X-API-Key (endpoint di controllo)"></div>
+</header>
+<main>
+  <section class="card">
+    <h2>Stato del bot</h2>
+    <div class="kv" id="status"></div>
+    <div class="row" style="margin-top:14px;">
+      <button onclick="control('start')">▶ Avvia</button>
+      <button class="danger" onclick="control('stop')">■ Ferma</button>
+      <button class="secondary" onclick="control('run-once')">⟳ Esegui un ciclo</button>
+    </div>
+    <div id="msg"></div>
+  </section>
+
+  <section class="card">
+    <h2>Account (paper)</h2>
+    <div class="kv" id="account"></div>
+  </section>
+
+  <section class="card wide">
+    <h2>Backtest — Moving Average Crossover</h2>
+    <div class="row">
+      <label>Simbolo<input id="bt-symbol" value="SPY"></label>
+      <label>SMA breve<input id="bt-short" type="number" value="20"></label>
+      <label>SMA lunga<input id="bt-long" type="number" value="50"></label>
+      <label>Periodo<input id="bt-period" value="2y"></label>
+      <button onclick="backtest()">Esegui backtest</button>
+    </div>
+    <div class="metrics" id="metrics"></div>
+    <div style="position:relative; height:300px;"><canvas id="chart"></canvas></div>
+  </section>
+
+  <section class="card wide">
+    <h2>Log</h2>
+    <pre id="logs">Caricamento…</pre>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let chart;
+try { $("apikey").value = localStorage.getItem("qts_api_key") || ""; } catch (e) {}
+$("apikey").addEventListener("change", () => { try { localStorage.setItem("qts_api_key", $("apikey").value); } catch (e) {} });
+
+const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const kv = (obj) => Object.entries(obj).map(([k, v]) =>
+  `<span>${esc(k)}</span><span>${v === null || v === undefined ? "—" : esc(typeof v === "object" ? JSON.stringify(v) : v)}</span>`).join("");
+
+async function refresh() {
+  try {
+    const s = await (await fetch("/api/status")).json();
+    $("badge").textContent = s.running ? "RUNNING" : "STOPPED";
+    $("badge").className = "badge " + (s.running ? "on" : "off");
+    const sig = s.last_signal || {};
+    $("status").innerHTML = kv({
+      Simbolo: s.symbol, Strategia: s.strategy,
+      "SMA": `${s.params.short_window} / ${s.params.long_window}`,
+      "Sorgente dati": `${s.data_source} (ultima: ${s.last_data_source_used || "—"})`,
+      "Intervallo loop": s.loop_interval_seconds + "s", Cicli: s.cycles,
+      "Ultimo run": s.last_run_at, "Ultimo segnale": sig.action ? `${sig.action} @ ${sig.close}` : null,
+      Errore: s.last_error,
+    });
+    const a = s.account || {};
+    $("account").innerHTML = kv({ Broker: a.broker, Cash: a.cash, "Valore posizioni": a.market_value,
+      Equity: a.equity, "P&L": a.pnl, Posizioni: a.positions, Ordini: (a.orders || []).length });
+
+    const logs = await (await fetch("/api/logs?limit=100")).json();
+    $("logs").textContent = logs.reverse().map(l => `${l.timestamp.slice(0,19)} ${l.level.padEnd(7)} ${l.message}`).join("\n") || "Nessun log";
+  } catch (e) { $("msg").textContent = "Errore di aggiornamento: " + e; }
+}
+
+async function control(action) {
+  $("msg").textContent = "…";
+  const r = await fetch(`/api/bot/${action}`, { method: "POST", headers: { "X-API-Key": $("apikey").value } });
+  const body = await r.json();
+  $("msg").textContent = r.ok ? (body.detail || `${body.action} @ ${body.close}`) : `Errore ${r.status}: ${body.detail}`;
+  refresh();
+}
+
+async function backtest() {
+  const q = new URLSearchParams({ symbol: $("bt-symbol").value, short_window: $("bt-short").value,
+    long_window: $("bt-long").value, period: $("bt-period").value });
+  $("metrics").innerHTML = "<small>Calcolo in corso…</small>";
+  const r = await fetch("/api/backtest?" + q);
+  const body = await r.json();
+  if (!r.ok) { $("metrics").innerHTML = `<small>Errore: ${esc(JSON.stringify(body.detail))}</small>`; return; }
+  const m = body.metrics;
+  const show = { "Rendimento %": m.total_return_pct, "Buy&Hold %": m.buy_and_hold_return_pct, "CAGR %": m.cagr_pct,
+    "Sharpe": m.sharpe_ratio, "Max DD %": m.max_drawdown_pct, "Trade": m.num_trades, "Win rate %": m.win_rate_pct ?? "—",
+    "Dati": body.data_source };
+  $("metrics").innerHTML = Object.entries(show).map(([k, v]) => `<div class="metric"><small>${esc(k)}</small><b>${esc(v)}</b></div>`).join("");
+  const labels = body.equity_curve.map(p => p.date), data = body.equity_curve.map(p => p.equity);
+  if (chart) chart.destroy();
+  if (window.Chart) {
+    chart = new Chart($("chart"), { type: "line",
+      data: { labels, datasets: [{ label: `Equity ${body.symbol}`, data, borderColor: "#3b82f6", pointRadius: 0, borderWidth: 2 }] },
+      options: { maintainAspectRatio: false, scales: { x: { ticks: { color: "#8b95a1", maxTicksLimit: 8 } }, y: { ticks: { color: "#8b95a1" } } },
+                 plugins: { legend: { labels: { color: "#e6e9ed" } } } } });
+  }
+}
+
+refresh(); backtest(); setInterval(refresh, 10000);
+</script>
+</body>
+</html>
