@@ -11,9 +11,8 @@ services:
     runtime: python
     plan: free                  # "starter" o superiore per un bot sempre attivo (il free va in sleep)
     region: frankfurt           # oregon | ohio | virginia | frankfurt | singapore
-    # `branch` omesso: Render usa il branch di default del repository GitHub.
-    # Per fissarne uno specifico aggiungi ad es. `branch: main` (deve esistere).
-    autoDeploy: true            # redeploy automatico a ogni push sul branch
+    branch: main                # il branch deve esistere su GitHub
+    autoDeploy: true            # redeploy automatico a ogni push su `main`
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     # Render inietta la variabile PORT (default 10000): la usiamo con fallback.
     startCommand: uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000} --proxy-headers --forwarded-allow-ips='*'

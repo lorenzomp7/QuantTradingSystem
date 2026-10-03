@@ -113,7 +113,7 @@ Verifica prima del push che `.env` **non** compaia in `git status`
    Ti chiederà i valori delle variabili con `sync: false` (chiavi broker):
    lasciale vuote se usi `BROKER=paper`.
 4. **Apply**: parte la build (`pip install -r requirements.txt`) e poi lo start
-   (`uvicorn main:app --host 0.0.0.0 --port $PORT`). Il deploy usa il branch di default del repo GitHub.
+   (`uvicorn main:app --host 0.0.0.0 --port $PORT`). Il deploy usa il branch `main`.
 5. A deploy completato il servizio è pubblico su
    `https://quant-trading-system.onrender.com` (o simile).
 6. Copia il valore generato di `CONTROL_API_KEY` da *Environment* e usalo
