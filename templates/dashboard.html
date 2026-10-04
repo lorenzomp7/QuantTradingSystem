@@ -63,6 +63,7 @@
     </div>
     <div class="metrics" id="metrics"></div>
     <div style="position:relative; height:300px;"><canvas id="chart"></canvas></div>
+    <small style="color:var(--muted)">Blu = investito · grigio tratteggiato = in liquidità (equity ferma) · arancio = Buy &amp; Hold · <span style="color:var(--green)">●</span> BUY / <span style="color:var(--red)">●</span> SELL</small>
   </section>
 
   <section class="card wide">
@@ -124,13 +125,30 @@ async function backtest() {
     "Sharpe": m.sharpe_ratio, "Max DD %": m.max_drawdown_pct, "Trade": m.num_trades, "Win rate %": m.win_rate_pct ?? "—",
     "Dati": body.data_source };
   $("metrics").innerHTML = Object.entries(show).map(([k, v]) => `<div class="metric"><small>${esc(k)}</small><b>${esc(v)}</b></div>`).join("");
-  const labels = body.equity_curve.map(p => p.date), data = body.equity_curve.map(p => p.equity);
+  const pts = body.equity_curve, labels = pts.map(p => p.date);
+  // Marker sui trade: BUY verde, SELL rosso (i trade cadono sulla barra del segnale).
+  const tradeAt = Object.fromEntries((body.trades || []).map(t => [t.date, t.side]));
+  const side = labels.map(d => tradeAt[d]);
+  const color = (s) => s === "BUY" ? "#22c55e" : s === "SELL" ? "#ef4444" : "transparent";
+  // Tratto in liquidità (in_market = 0 sulla barra d'arrivo): grigio tratteggiato.
+  const flat = (ctx) => pts[ctx.p1DataIndex].in_market === 0;
   if (chart) chart.destroy();
   if (window.Chart) {
     chart = new Chart($("chart"), { type: "line",
-      data: { labels, datasets: [{ label: `Equity ${body.symbol}`, data, borderColor: "#3b82f6", pointRadius: 0, borderWidth: 2 }] },
-      options: { maintainAspectRatio: false, scales: { x: { ticks: { color: "#8b95a1", maxTicksLimit: 8 } }, y: { ticks: { color: "#8b95a1" } } },
-                 plugins: { legend: { labels: { color: "#e6e9ed" } } } } });
+      data: { labels, datasets: [
+        { label: `Strategia ${body.symbol}`, data: pts.map(p => p.equity), borderColor: "#3b82f6", borderWidth: 2,
+          pointRadius: side.map(s => s ? 4 : 0), pointHoverRadius: 5,
+          pointBackgroundColor: side.map(color), pointBorderColor: side.map(color),
+          segment: { borderColor: ctx => flat(ctx) ? "#6b7280" : undefined, borderDash: ctx => flat(ctx) ? [4, 4] : undefined } },
+        { label: "Buy & Hold", data: pts.map(p => p.benchmark), borderColor: "#f59e0b", borderWidth: 1.5, pointRadius: 0 },
+      ] },
+      options: { maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
+                 scales: { x: { ticks: { color: "#8b95a1", maxTicksLimit: 8 } }, y: { ticks: { color: "#8b95a1" } } },
+                 plugins: { legend: { labels: { color: "#e6e9ed" } },
+                   tooltip: { callbacks: { afterBody: (items) => {
+                     const i = items[0].dataIndex;
+                     return [pts[i].in_market ? "Posizione: LONG" : "Posizione: liquidità", side[i] ? `Trade: ${side[i]}` : ""].filter(Boolean);
+                   } } } } } });
   }
 }
 

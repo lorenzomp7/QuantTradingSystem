@@ -61,13 +61,28 @@ class BacktestResult:
     trades: pd.DataFrame = field(repr=False)
     signals: pd.DataFrame = field(repr=False)
 
-    def to_dict(self, tail: int = 250) -> dict:
-        """Serializzazione JSON-friendly (per le API)."""
-        eq = self.equity_curve.tail(tail)
+    def to_dict(self, tail: int | None = None) -> dict:
+        """
+        Serializzazione JSON-friendly (per le API).
+
+        Ogni punto della curva include anche il benchmark Buy & Hold e il flag
+        `in_market` (posizione detenuta sulla barra): quando è 0 la strategia è
+        in liquidità e l'equity resta piatta, cosa che la dashboard evidenzia.
+        """
+        eq = self.equity_curve if tail is None else self.equity_curve.tail(tail)
+        close = self.signals["close"]
+        benchmark = self.metrics["initial_capital"] * close / close.iloc[0]
+        in_market = self.signals["in_market"]
         return {
             "metrics": self.metrics,
             "equity_curve": [
-                {"date": d.strftime("%Y-%m-%d"), "equity": round(float(v), 2)} for d, v in eq.items()
+                {
+                    "date": d.strftime("%Y-%m-%d"),
+                    "equity": round(float(v), 2),
+                    "benchmark": round(float(benchmark.loc[d]), 2),
+                    "in_market": int(in_market.loc[d]),
+                }
+                for d, v in eq.items()
             ],
             "trades": [
                 {
@@ -124,6 +139,7 @@ class BaseStrategy(ABC):
 
         # Posizione effettivamente detenuta: segnale di ieri (no look-ahead).
         held = sig["signal"].shift(1).fillna(0.0)
+        sig["in_market"] = held.astype(int)
 
         # Costi: fee_bps applicati ad ogni cambio di posizione (turnover).
         turnover = held.diff().abs().fillna(held.abs())
