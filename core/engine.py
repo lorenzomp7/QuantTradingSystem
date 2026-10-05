@@ -83,6 +83,8 @@ class TradingEngine:
                 "fee_bps": self.strategy.params.fee_bps,
             },
             "data_source": self.cfg.data_source,
+            "data_interval": self.cfg.data_interval,
+            "data_period": self.cfg.data_period,
             "last_data_source_used": self.fetcher.last_source_used,
             "loop_interval_seconds": self.cfg.loop_interval_seconds,
             "started_at": self.started_at,
@@ -109,8 +111,16 @@ class TradingEngine:
             raise RuntimeError("Un ciclo è già in esecuzione.")
         try:
             data = self.fetcher.get_ohlcv(self.symbol, self.cfg.data_period, self.cfg.data_interval)
-            signal = self.strategy.latest_signal(data)
-            price = signal["close"]
+            price = float(data["close"].iloc[-1])  # ultimo prezzo disponibile
+
+            # Con candele intraday l'ultima barra è ancora "in formazione": il
+            # segnale si calcola solo sulle candele chiuse, per non far
+            # oscillare BUY/SELL nel giro di pochi secondi.
+            intraday = self.cfg.data_interval not in {"1d", "5d", "1wk", "1mo", "3mo"}
+            closed = data.iloc[:-1] if intraday and len(data) > self.strategy.params.long_window + 1 else data
+            signal = self.strategy.latest_signal(closed)
+            signal["signal_bar_close"] = signal["close"]
+            signal["close"] = round(price, 4)
 
             if isinstance(self.broker, PaperBroker):
                 self.broker.mark_price(self.symbol, price)
@@ -118,7 +128,11 @@ class TradingEngine:
             position = self.broker.get_position(self.symbol)
             order = None
             if signal["signal"] == 1 and position <= 0:
-                order = self.broker.submit_order(self.symbol, "BUY", self.cfg.trade_quantity, price)
+                qty = self._buy_quantity(price)
+                if qty > 0:
+                    order = self.broker.submit_order(self.symbol, "BUY", qty, price)
+                else:
+                    logger.warning("Liquidità insufficiente per comprare %s @ %.2f", self.symbol, price)
             elif signal["signal"] == 0 and position > 0:
                 order = self.broker.submit_order(self.symbol, "SELL", position, price)
 
@@ -145,6 +159,23 @@ class TradingEngine:
             raise
         finally:
             self._cycle_lock.release()
+
+    def _buy_quantity(self, price: float) -> float:
+        """
+        Quantità da comprare: fissa (TRADE_QUANTITY > 0) oppure una
+        percentuale della liquidità disponibile (POSITION_SIZE_PCT), al netto
+        delle commissioni e arrotondata per difetto a 6 decimali.
+        """
+        if self.cfg.trade_quantity > 0:
+            return self.cfg.trade_quantity
+        try:
+            cash = float(self.broker.get_account()["cash"])
+        except (NotImplementedError, KeyError):
+            return 0.0
+        pct = min(max(self.cfg.position_size_pct, 0.0), 100.0) / 100
+        fee = self.strategy.params.fee_bps / 10_000
+        qty = cash * pct / (price * (1 + fee))
+        return int(qty * 1e6) / 1e6
 
     # ------------------------------------------------------------ Loop
     async def _loop(self) -> None:

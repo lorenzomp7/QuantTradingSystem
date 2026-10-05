@@ -92,6 +92,7 @@ async function refresh() {
       Simbolo: s.symbol, Strategia: s.strategy,
       "SMA": `${s.params.short_window} / ${s.params.long_window}`,
       "Sorgente dati": `${s.data_source} (ultima: ${s.last_data_source_used || "—"})`,
+      Candele: `${s.data_interval} (storico ${s.data_period})`,
       "Intervallo loop": s.loop_interval_seconds + "s", Cicli: s.cycles,
       "Ultimo run": s.last_run_at, "Ultimo segnale": sig.action ? `${sig.action} @ ${sig.close}` : null,
       Errore: s.last_error,

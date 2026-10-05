@@ -84,3 +84,18 @@ def test_paper_broker_round_trip():
     assert acct["cash"] == pytest.approx(1_050)
     with pytest.raises(ValueError):
         b.submit_order("X", "SELL", 1, 110)
+
+
+def test_clamp_period_for_intraday():
+    from utils.data_fetcher import clamp_period
+
+    assert clamp_period("2y", "5m") == "60d"
+    assert clamp_period("5d", "5m") == "5d"
+    assert clamp_period("2y", "1d") == "2y"
+    assert clamp_period("1mo", "1m") == "7d"
+
+
+def test_mock_intraday_bars():
+    df = generate_mock_ohlcv("BTC-USD", period="5d", interval="5m")
+    assert len(df) == 5 * 288
+    assert (df.index.to_series().diff().dropna() == pd.Timedelta(minutes=5)).all()

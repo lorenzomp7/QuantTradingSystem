@@ -32,9 +32,21 @@ OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 
 # Mappa periodo yfinance -> numero approssimativo di barre giornaliere (per il mock).
 _PERIOD_TO_DAYS = {
-    "1mo": 21, "3mo": 63, "6mo": 126, "1y": 252, "2y": 504,
-    "5y": 1260, "10y": 2520, "ytd": 200, "max": 5000,
+    "1d": 1, "5d": 5, "7d": 7, "1mo": 21, "60d": 60, "3mo": 63, "6mo": 126,
+    "1y": 252, "2y": 504, "5y": 1260, "10y": 2520, "ytd": 200, "max": 5000,
 }
+
+# Durata in minuti delle candele intraday.
+_INTERVAL_MINUTES = {"1m": 1, "2m": 2, "5m": 5, "15m": 15, "30m": 30, "60m": 60, "90m": 90, "1h": 60}
+
+# Limiti di Yahoo Finance sullo storico intraday: (giorni massimi, periodo da usare).
+_YAHOO_INTRADAY_LIMIT = {
+    "1m": (7, "7d"), "2m": (60, "60d"), "5m": (60, "60d"), "15m": (60, "60d"),
+    "30m": (60, "60d"), "90m": (60, "60d"), "60m": (504, "2y"), "1h": (504, "2y"),
+}
+
+# Numero massimo di barre generate dal mock.
+_MAX_MOCK_BARS = 20_000
 
 # Mappa interval -> frequenza pandas per l'indice temporale del mock.
 _INTERVAL_TO_FREQ = {
@@ -78,6 +90,7 @@ class MarketDataFetcher:
         use_cache: bool = True,
     ) -> pd.DataFrame:
         """Restituisce i dati OHLCV per `symbol`, usando la cache se valida."""
+        period = clamp_period(period, interval)
         key = (symbol.upper(), period, interval, self.source)
         now = time.monotonic()
 
@@ -146,13 +159,17 @@ def generate_mock_ohlcv(
     con Z_t ~ N(0, 1) e dt = 1/252 (barre giornaliere). Il seed di default è
     derivato dal simbolo, così lo stesso ticker produce sempre la stessa serie.
     """
-    n = _PERIOD_TO_DAYS.get(period, 504)
+    days = _PERIOD_TO_DAYS.get(period, 504)
     freq = _INTERVAL_TO_FREQ.get(interval, "B")
+    minutes = _INTERVAL_MINUTES.get(interval)
+    # Intraday: barre continue 24/7 (come le crypto); giornaliero: 1 barra al giorno.
+    bars_per_day = (24 * 60) // minutes if minutes else 1
+    n = min(days * bars_per_day, _MAX_MOCK_BARS)
     if seed is None:
         seed = zlib.crc32(symbol.upper().encode())  # deterministico tra processi
     rng = np.random.default_rng(seed)
 
-    dt = 1 / 252
+    dt = 1 / (252 * bars_per_day)
     shocks = rng.standard_normal(n)
     log_returns = (mu - 0.5 * sigma**2) * dt + sigma * np.sqrt(dt) * shocks
     close = start_price * np.exp(np.cumsum(log_returns))
@@ -166,7 +183,7 @@ def generate_mock_ohlcv(
     low = np.minimum(open_, close) * (1 - intrabar)
     volume = rng.integers(1_000_000, 10_000_000, n).astype(float)
 
-    end = pd.Timestamp.now().normalize()
+    end = pd.Timestamp.now().floor(freq) if minutes else pd.Timestamp.now().normalize()
     index = pd.date_range(end=end, periods=n, freq=freq, name="date")
 
     return pd.DataFrame(
@@ -176,6 +193,21 @@ def generate_mock_ohlcv(
 
 
 # ------------------------------------------------------------- Utilities
+def clamp_period(period: str, interval: str) -> str:
+    """
+    Riduce `period` al massimo consentito da Yahoo per l'intervallo intraday
+    richiesto (es. 5m -> 60d): evita errori come DATA_PERIOD=2y con 5m.
+    """
+    limit = _YAHOO_INTRADAY_LIMIT.get(interval)
+    if limit is None:
+        return period
+    max_days, max_period = limit
+    if _PERIOD_TO_DAYS.get(period, max_days + 1) > max_days:
+        logger.warning("Periodo %r troppo lungo per l'intervallo %r: uso %r.", period, interval, max_period)
+        return max_period
+    return period
+
+
 def normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     """
     Uniforma un DataFrame OHLCV: colonne minuscole, niente MultiIndex

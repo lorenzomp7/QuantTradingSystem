@@ -135,12 +135,16 @@ Verifica prima del push che `.env` **non** compaia in `git status`
 | `PYTHON_VERSION` | consigliata | `3.11.9` | Versione Python usata da Render |
 | `CONTROL_API_KEY` | **sì (prod)** | — | Protegge start/stop/run-once. Senza, chiunque può controllare il bot |
 | `DATA_SOURCE` | no | `yahoo` | `yahoo` o `mock` |
-| `SYMBOL` | no | `SPY` | Ticker da tradare (es. `AAPL`, `BTC-USD`) |
-| `DATA_PERIOD` / `DATA_INTERVAL` | no | `2y` / `1d` | Storico scaricato |
+| `SYMBOL` | no | `BTC-USD` | Ticker da tradare (es. `ETH-USD`, `SPY`, `AAPL`) |
+| `DATA_PERIOD` / `DATA_INTERVAL` | no | `5d` / `5m` | Storico e durata candele. Intraday: Yahoo consente max `60d` (il periodo viene ridotto in automatico). Azioni giornaliere: `2y` / `1d` |
 | `SHORT_WINDOW` / `LONG_WINDOW` | no | `20` / `50` | Finestre delle SMA |
-| `INITIAL_CAPITAL` / `FEE_BPS` / `TRADE_QUANTITY` | no | `10000` / `5` / `10` | Parametri di capitale e costi |
-| `LOOP_INTERVAL_SECONDS` | no | `300` | Frequenza del ciclo del bot |
-| `AUTO_START_BOT` | no | `false` | Avvia il bot all'avvio del server |
+| `INITIAL_CAPITAL` / `FEE_BPS` | no | `10000` / `5` | Capitale iniziale del paper broker e commissioni (bps) |
+| `POSITION_SIZE_PCT` | no | `100` | % della liquidità investita a ogni BUY (quantità frazionaria) |
+| `TRADE_QUANTITY` | no | `0` | Se > 0, quantità fissa per ogni BUY (ha la precedenza) |
+| `LOOP_INTERVAL_SECONDS` | no | `60` | Frequenza del ciclo del bot |
+| `AUTO_START_BOT` | no | `true` | Avvia il bot all'avvio del server e dopo ogni riavvio |
+| `KEEP_ALIVE` / `KEEP_ALIVE_INTERVAL_SECONDS` | no | `true` / `600` | Auto-ping a `RENDER_EXTERNAL_URL/health` per evitare lo sleep del piano free |
+| `KEEP_ALIVE_URL` | no | — | URL da pingare al posto di `RENDER_EXTERNAL_URL` |
 | `BROKER` | no | `paper` | `paper`, `alpaca`, `ccxt` |
 | `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` | se `BROKER=alpaca` | — | 🔐 **Segreti**: solo su Render, mai nel repo |
 | `ALPACA_BASE_URL` | no | paper endpoint | `https://paper-api.alpaca.markets` |
@@ -149,9 +153,12 @@ Verifica prima del push che `.env` **non** compaia in `git status`
 
 ### Note operative su Render
 
-- **Piano free**: il servizio va in *sleep* dopo ~15 minuti senza traffico HTTP,
-  quindi il loop del bot si ferma. Per un bot sempre attivo usa almeno il
-  piano *Starter* (o un ping esterno, sconsigliato per uso serio).
+- **Piano free**: il servizio va in *sleep* dopo ~15 minuti senza traffico HTTP.
+  Il keep-alive integrato (`KEEP_ALIVE=true`) pinga ogni 10 minuti l'URL
+  pubblico del servizio; come rete di sicurezza configura anche un ping
+  esterno gratuito (cron-job.org / UptimeRobot) su `https://<servizio>.onrender.com/health`.
+  Il free include 750 ore/mese: bastano per un solo servizio acceso 24/7.
+  Per un uso serio resta consigliato il piano *Starter*.
 - **Stato in memoria**: posizioni del paper broker e log si azzerano a ogni
   deploy/riavvio. Per persistenza aggiungi un database (es. Render PostgreSQL).
 - **Yahoo Finance** può limitare le richieste da IP cloud: in quel caso il

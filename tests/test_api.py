@@ -50,3 +50,17 @@ def test_logs_endpoint():
     with TestClient(main.app) as client:
         logs = client.get("/api/logs", params={"limit": 10}).json()
         assert isinstance(logs, list) and logs
+
+
+def test_buy_sizing_works_with_expensive_asset():
+    # Con BTC a ~100k e 10k di capitale una quantità fissa di 10 fallirebbe:
+    # il sizing percentuale compra una frazione senza superare la liquidità.
+    from core.engine import TradingEngine
+    from config import Settings
+    from execution.broker import PaperBroker
+
+    eng = TradingEngine(Settings(), broker=PaperBroker(initial_cash=10_000, fee_bps=5))
+    qty = eng._buy_quantity(100_000.0)
+    assert 0 < qty < 0.1
+    eng.broker.submit_order("BTC-USD", "BUY", qty, 100_000.0)
+    assert eng.broker.get_account()["cash"] >= 0

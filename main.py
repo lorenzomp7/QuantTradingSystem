@@ -36,6 +36,7 @@ from fastapi.responses import HTMLResponse
 from config import settings
 from core.engine import TradingEngine
 from strategy.quant_model import MovingAverageCrossover, StrategyParams
+from utils.keep_alive import keep_alive_loop
 from utils.logger import get_logger, memory_handler, setup_logging
 
 __version__ = "1.0.0"
@@ -52,15 +53,27 @@ DASHBOARD_HTML = (Path(__file__).parent / "templates" / "dashboard.html").read_t
 async def lifespan(app: FastAPI):
     """Avvio/arresto ordinato: il bot si ferma pulito quando Render riavvia."""
     logger.info(
-        "Avvio %s v%s (env=%s, broker=%s, data=%s, symbol=%s)",
+        "Avvio %s v%s (env=%s, broker=%s, data=%s, symbol=%s, candele=%s)",
         settings.app_name, __version__, settings.environment,
-        settings.broker, settings.data_source, settings.symbol,
+        settings.broker, settings.data_source, settings.symbol, settings.data_interval,
     )
     if not settings.control_api_key:
         logger.warning("CONTROL_API_KEY non impostata: gli endpoint di controllo sono pubblici!")
     if settings.auto_start_bot:
         await engine.start()
+
+    keep_alive_task = None
+    if settings.keep_alive and settings.keep_alive_url:
+        keep_alive_task = asyncio.create_task(
+            keep_alive_loop(settings.keep_alive_url, settings.keep_alive_interval_seconds), name="keep-alive"
+        )
+    elif settings.keep_alive:
+        logger.info("Keep-alive non attivo: nessun URL pubblico (RENDER_EXTERNAL_URL/KEEP_ALIVE_URL).")
+
     yield
+
+    if keep_alive_task:
+        keep_alive_task.cancel()
     await engine.stop()
     logger.info("Shutdown completato.")
 
@@ -133,7 +146,7 @@ async def run_backtest(
     symbol: str = Query(default=settings.symbol, min_length=1, max_length=20),
     short_window: int = Query(default=settings.short_window, ge=1, le=400),
     long_window: int = Query(default=settings.long_window, ge=2, le=500),
-    period: str = Query(default=settings.data_period, pattern=r"^(1mo|3mo|6mo|1y|2y|5y|10y|ytd|max)$"),
+    period: str = Query(default="2y", pattern=r"^(1mo|3mo|6mo|1y|2y|5y|10y|ytd|max)$"),
     fee_bps: float = Query(default=settings.fee_bps, ge=0, le=500),
 ) -> dict:
     try:

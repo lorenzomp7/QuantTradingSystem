@@ -8,5 +8,6 @@ os.environ.setdefault("DATA_SOURCE", "mock")
 os.environ.setdefault("CONTROL_API_KEY", "test-key")
 os.environ.setdefault("AUTO_START_BOT", "false")
 os.environ.setdefault("LOOP_INTERVAL_SECONDS", "1")
+os.environ.setdefault("KEEP_ALIVE", "false")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))

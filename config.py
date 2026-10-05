@@ -55,22 +55,42 @@ class Settings:
     # "yahoo" = dati reali via yfinance (fallback automatico su mock se fallisce)
     # "mock"  = serie sintetica (Geometric Brownian Motion), nessuna rete richiesta
     data_source: str = field(default_factory=lambda: os.getenv("DATA_SOURCE", "yahoo").lower())
-    symbol: str = field(default_factory=lambda: os.getenv("SYMBOL", "SPY"))
-    data_period: str = field(default_factory=lambda: os.getenv("DATA_PERIOD", "2y"))
-    data_interval: str = field(default_factory=lambda: os.getenv("DATA_INTERVAL", "1d"))
+    # Default: crypto (mercato aperto 24/7) su candele da 5 minuti -> segnali
+    # più volte al giorno. Per azioni su base giornaliera: SYMBOL=SPY,
+    # DATA_INTERVAL=1d, DATA_PERIOD=2y.
+    symbol: str = field(default_factory=lambda: os.getenv("SYMBOL", "BTC-USD"))
+    # Yahoo limita lo storico intraday (5m -> max 60 giorni): il fetcher
+    # riduce automaticamente il periodo se troppo lungo per l'intervallo.
+    data_period: str = field(default_factory=lambda: os.getenv("DATA_PERIOD", "5d"))
+    data_interval: str = field(default_factory=lambda: os.getenv("DATA_INTERVAL", "5m"))
 
     # --- Strategia ----------------------------------------------------------
     short_window: int = field(default_factory=lambda: _env_int("SHORT_WINDOW", 20))
     long_window: int = field(default_factory=lambda: _env_int("LONG_WINDOW", 50))
     initial_capital: float = field(default_factory=lambda: _env_float("INITIAL_CAPITAL", 10_000.0))
     fee_bps: float = field(default_factory=lambda: _env_float("FEE_BPS", 5.0))
-    trade_quantity: float = field(default_factory=lambda: _env_float("TRADE_QUANTITY", 10.0))
+    # Dimensione della posizione: percentuale della liquidità investita a ogni
+    # BUY (100 = tutto, come nel backtest). Funziona con qualsiasi prezzo,
+    # anche BTC, perché la quantità può essere frazionaria.
+    position_size_pct: float = field(default_factory=lambda: _env_float("POSITION_SIZE_PCT", 100.0))
+    # Quantità fissa (es. 10 azioni). Se > 0 ha la precedenza su POSITION_SIZE_PCT.
+    trade_quantity: float = field(default_factory=lambda: _env_float("TRADE_QUANTITY", 0.0))
 
     # --- Bot ----------------------------------------------------------------
     # Intervallo (secondi) tra un ciclo e l'altro del bot.
-    loop_interval_seconds: int = field(default_factory=lambda: _env_int("LOOP_INTERVAL_SECONDS", 300))
-    # Avvia automaticamente il bot all'avvio del server.
-    auto_start_bot: bool = field(default_factory=lambda: _env_bool("AUTO_START_BOT", False))
+    loop_interval_seconds: int = field(default_factory=lambda: _env_int("LOOP_INTERVAL_SECONDS", 60))
+    # Avvia automaticamente il bot all'avvio del server (e dopo ogni riavvio).
+    auto_start_bot: bool = field(default_factory=lambda: _env_bool("AUTO_START_BOT", True))
+
+    # --- Keep-alive ---------------------------------------------------------
+    # Il piano free di Render sospende il servizio dopo ~15 min senza traffico.
+    # Il keep-alive chiama periodicamente l'URL pubblico del servizio stesso.
+    # Render imposta da solo RENDER_EXTERNAL_URL; KEEP_ALIVE_URL lo sovrascrive.
+    keep_alive: bool = field(default_factory=lambda: _env_bool("KEEP_ALIVE", True))
+    keep_alive_url: str = field(
+        default_factory=lambda: os.getenv("KEEP_ALIVE_URL") or os.getenv("RENDER_EXTERNAL_URL", "")
+    )
+    keep_alive_interval_seconds: int = field(default_factory=lambda: _env_int("KEEP_ALIVE_INTERVAL_SECONDS", 600))
 
     # --- Broker -------------------------------------------------------------
     # "paper"  = broker simulato in memoria (default, sicuro)

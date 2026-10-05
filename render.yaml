@@ -34,12 +34,14 @@ services:
       # --- Dati e strategia ------------------------------------------
       - key: DATA_SOURCE
         value: yahoo            # "mock" per dati sintetici senza rete
+      # Crypto 24/7 su candele da 5 minuti: segnali più volte al giorno.
+      # Per azioni giornaliere: SYMBOL=SPY, DATA_PERIOD=2y, DATA_INTERVAL=1d.
       - key: SYMBOL
-        value: SPY
+        value: BTC-USD
       - key: DATA_PERIOD
-        value: 2y
+        value: 5d               # con 5m Yahoo consente al massimo 60d
       - key: DATA_INTERVAL
-        value: 1d
+        value: 5m
       - key: SHORT_WINDOW
         value: "20"
       - key: LONG_WINDOW
@@ -48,14 +50,24 @@ services:
         value: "10000"
       - key: FEE_BPS
         value: "5"
+      - key: POSITION_SIZE_PCT
+        value: "100"            # % della liquidità investita a ogni BUY
       - key: TRADE_QUANTITY
-        value: "10"
+        value: "0"              # > 0 = quantità fissa (ha la precedenza)
 
       # --- Bot -------------------------------------------------------
       - key: LOOP_INTERVAL_SECONDS
-        value: "300"
+        value: "60"
       - key: AUTO_START_BOT
-        value: "false"
+        value: "true"           # il bot riparte da solo dopo ogni deploy/riavvio
+
+      # --- Keep-alive (piano free) -----------------------------------
+      # Ping a RENDER_EXTERNAL_URL/health (impostata da Render) per evitare
+      # la sospensione dopo 15 minuti senza traffico.
+      - key: KEEP_ALIVE
+        value: "true"
+      - key: KEEP_ALIVE_INTERVAL_SECONDS
+        value: "600"
 
       # --- Broker ----------------------------------------------------
       - key: BROKER
