@@ -9,6 +9,10 @@ strategia di esempio **Moving Average Crossover**, backtest vettorizzato
 
 ---
 
+## Dashboard e backtest
+
+Il grafico del backtest mostra l’intero periodo simulato, confronta la strategia con il benchmark Buy & Hold e indica operazioni e periodi in liquidità. La configurazione predefinita del bot usa dati crypto intraday e dimensiona le posizioni in percentuale.
+
 ## Fase 1 — Struttura della directory
 
 ```
