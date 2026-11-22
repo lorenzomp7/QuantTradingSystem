@@ -64,3 +64,21 @@ def test_buy_sizing_works_with_expensive_asset():
     assert 0 < qty < 0.1
     eng.broker.submit_order("BTC-USD", "BUY", qty, 100_000.0)
     assert eng.broker.get_account()["cash"] >= 0
+
+
+def test_dashboard_on_github_pages_can_call_the_api():
+    """La dashboard su GitHub Pages è su un'altra origine: servono CORS e il preflight per X-API-Key."""
+    pages = "https://lorenzomp7.github.io"
+    with TestClient(main.app) as client:
+        r = client.get("/api/status", headers={"Origin": pages})
+        assert r.headers["access-control-allow-origin"] == pages
+        pre = client.options("/api/bot/start", headers={
+            "Origin": pages, "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "x-api-key"})
+        assert pre.status_code == 200
+        assert "x-api-key" in pre.headers["access-control-allow-headers"].lower()
+        other = client.get("/api/status", headers={"Origin": "https://example.com"})
+        assert "access-control-allow-origin" not in other.headers
+        cfg = client.get("/config.js")
+        assert cfg.status_code == 200 and "javascript" in cfg.headers["content-type"]
+        assert "QTS_API" not in cfg.text

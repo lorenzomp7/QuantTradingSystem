@@ -2,7 +2,8 @@
 
 Sistema didattico di trading quantitativo in Python ≥ 3.10: strategia Moving
 Average Crossover, backtest vettorizzato (pandas/NumPy), paper broker e dashboard
-FastAPI, con deploy su Render. Lavora su `main_claude` salvo indicazione diversa.
+FastAPI. Dashboard su GitHub Pages, API e bot in Docker su una VM Oracle
+Cloud Always Free (`Dockerfile`, `deploy/`, workflow in `.github/workflows/`). Lavora su `main_claude` salvo indicazione diversa.
 
 ## Struttura
 
@@ -34,7 +35,7 @@ comandi davvero eseguiti e i loro esiti.
 - Le metriche (CAGR, Sharpe, Sortino, drawdown, win rate) vanno confrontate con
   il benchmark Buy & Hold sullo stesso capitale e periodo.
 - Il broker predefinito è e resta `paper`: non abilitare ordini reali, non
-  aggiungere chiavi API ai file e non cambiare `render.yaml` senza richiesta.
+  aggiungere chiavi API ai file e non cambiare `deploy/compose.yml` né i workflow di deploy senza richiesta.
 - I test non devono usare la rete: usa i dati mock.
 - Per confrontare il backtest con librerie esterne (backtesting.py, Backtrader)
   usa stessi dati, commissioni e regole di esecuzione, e riporta le differenze.

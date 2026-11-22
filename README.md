@@ -2,7 +2,8 @@
 
 Sistema di trading quantitativo in Python 3.10+ con dashboard web (FastAPI),
 strategia di esempio **Moving Average Crossover**, backtest vettorizzato
-(Pandas/NumPy), paper broker e deploy automatico su **Render**.
+(Pandas/NumPy), paper broker e deploy automatico gratuito: dashboard su **GitHub Pages**,
+bot e API su una **VM Oracle Cloud Always Free** (0 €/mese, sempre accesa).
 
 > ⚠️ Progetto a scopo didattico. Il broker di default è **simulato** (paper):
 > nessun ordine reale viene inviato finché non si implementa un broker reale.
@@ -40,7 +41,9 @@ QuantTradingSystem/
 │   └── test_quant_model.py
 ├── requirements.txt         # Dipendenze di runtime
 ├── requirements-dev.txt     # Dipendenze di test (pytest, httpx)
-├── render.yaml              # Blueprint Render (Infrastructure as Code)
+├── Dockerfile               # Immagine di API + bot
+├── deploy/                  # compose, Caddy e guida della VM Oracle (deploy/README.md)
+├── .github/workflows/       # test, GitHub Pages, deploy sulla VM
 ├── .env.example             # Template variabili d'ambiente
 ├── .gitignore
 └── README.md
@@ -71,7 +74,7 @@ rendimento(t) = posizione(t) * r_asset(t) - |Δposizione(t)| * fee_bps / 10000
 variabile è impostata. Nella dashboard la chiave si inserisce in alto a destra.
 
 ```bash
-curl -X POST -H "X-API-Key: $CONTROL_API_KEY" https://<tuo-servizio>.onrender.com/api/bot/start
+curl -X POST -H "X-API-Key: $CONTROL_API_KEY" https://quant.<IP-con-i-trattini>.sslip.io/api/bot/start
 ```
 
 ### Esecuzione locale
@@ -106,38 +109,38 @@ git push -u origin main
 Verifica prima del push che `.env` **non** compaia in `git status`
 (è escluso da `.gitignore`).
 
-### 2. Render
+### 2. Deploy gratuito: GitHub Pages + VM Oracle
 
-**Opzione A — Blueprint (consigliata, usa `render.yaml`)**
+- **Dashboard** → GitHub Pages, <https://lorenzomp7.github.io/QuantTradingSystem/> (workflow `pages.yml`).
+- **API + bot** → container Docker su una VM Oracle Cloud *Always Free* condivisa con gli altri progetti,
+  dietro Caddy con HTTPS automatico (workflow `deploy-backend.yml`). La VM non va mai in sleep: niente keep-alive.
 
-1. Accedi a <https://dashboard.render.com> e collega il tuo account GitHub
-   (*Account Settings → Git Providers*), autorizzando l'accesso al repo.
-2. **New → Blueprint** e seleziona il repository `QuantTradingSystem`.
-3. Render legge `render.yaml` e propone il servizio `quant-trading-system`.
-   Ti chiederà i valori delle variabili con `sync: false` (chiavi broker):
-   lasciale vuote se usi `BROKER=paper`.
-4. **Apply**: parte la build (`pip install -r requirements.txt`) e poi lo start
-   (`uvicorn main:app --host 0.0.0.0 --port $PORT`). Il deploy usa il branch `main`.
-5. A deploy completato il servizio è pubblico su
-   `https://quant-trading-system.onrender.com` (o simile).
-6. Copia il valore generato di `CONTROL_API_KEY` da *Environment* e usalo
-   nella dashboard per avviare/fermare il bot.
+1. Crea la VM una volta sola seguendo [deploy/README.md](deploy/README.md).
+2. In **Settings → Secrets and variables → Actions** del repo:
 
-**Opzione B — Web Service manuale**
+   | Tipo | Nome | Valore |
+   |---|---|---|
+   | Variable | `VM_HOST` | IP pubblico della VM |
+   | Secret | `VM_SSH_KEY` | chiave privata SSH della VM |
+   | Secret | `CONTROL_API_KEY` | chiave per start/stop/run-once, es. `openssl rand -hex 24` |
+   | Variable | `SYMBOL`, `DATA_INTERVAL`, `DATA_PERIOD` | facoltative (di base `BTC-USD`, `5m`, `5d`) |
+   | Variable | `API_HOST` | facoltativa: dominio tuo per l'API |
+   | Variable | `CORS_ORIGINS` | facoltativa, di base `https://lorenzomp7.github.io` |
 
-1. **New → Web Service** → seleziona il repo.
-2. Runtime: *Python 3* · Branch: `main`
-3. Build Command: `pip install -r requirements.txt`
-4. Start Command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
-5. Health Check Path: `/health`
-6. Aggiungi le variabili d'ambiente della tabella sotto, poi **Create Web Service**.
+3. **Settings → Pages → Source: GitHub Actions**.
+4. Da **Actions** lancia *Deploy backend* e poi *GitHub Pages* (*Run workflow*).
+   L'API risponde su `https://quant.<IP con i trattini>.sslip.io` (Swagger su `/docs`) e la dashboard
+   su Pages la usa in automatico; la dashboard resta disponibile anche all'indirizzo dell'API.
+5. Nella dashboard inserisci `CONTROL_API_KEY` in alto a destra per avviare/fermare il bot.
+
+Dai push successivi su `main` i due workflow si aggiornano da soli.
 
 ### Variabili d'ambiente
 
 | Variabile | Obbligatoria | Default | Descrizione |
 |---|---|---|---|
-| `PYTHON_VERSION` | consigliata | `3.11.9` | Versione Python usata da Render |
 | `CONTROL_API_KEY` | **sì (prod)** | — | Protegge start/stop/run-once. Senza, chiunque può controllare il bot |
+| `CORS_ORIGINS` | no | `https://lorenzomp7.github.io` | Origini (separate da virgola) da cui il browser può chiamare l'API |
 | `DATA_SOURCE` | no | `yahoo` | `yahoo` o `mock` |
 | `SYMBOL` | no | `BTC-USD` | Ticker da tradare (es. `ETH-USD`, `SPY`, `AAPL`) |
 | `DATA_PERIOD` / `DATA_INTERVAL` | no | `5d` / `5m` | Storico e durata candele. Intraday: Yahoo consente max `60d` (il periodo viene ridotto in automatico). Azioni giornaliere: `2y` / `1d` |
@@ -147,24 +150,19 @@ Verifica prima del push che `.env` **non** compaia in `git status`
 | `TRADE_QUANTITY` | no | `0` | Se > 0, quantità fissa per ogni BUY (ha la precedenza) |
 | `LOOP_INTERVAL_SECONDS` | no | `60` | Frequenza del ciclo del bot |
 | `AUTO_START_BOT` | no | `true` | Avvia il bot all'avvio del server e dopo ogni riavvio |
-| `KEEP_ALIVE` / `KEEP_ALIVE_INTERVAL_SECONDS` | no | `true` / `600` | Auto-ping a `RENDER_EXTERNAL_URL/health` per evitare lo sleep del piano free |
-| `KEEP_ALIVE_URL` | no | — | URL da pingare al posto di `RENDER_EXTERNAL_URL` |
-| `BROKER` | no | `paper` | `paper`, `alpaca`, `ccxt` |
-| `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` | se `BROKER=alpaca` | — | 🔐 **Segreti**: solo su Render, mai nel repo |
+| `BROKER` | no | `paper` | `paper`, `alpaca`, `ccxt` (sulla VM è fissato a `paper` in `deploy/compose.yml`) |
+| `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` | se `BROKER=alpaca` | — | 🔐 **Segreti**: solo come secret, mai nel repo |
 | `ALPACA_BASE_URL` | no | paper endpoint | `https://paper-api.alpaca.markets` |
 | `CCXT_EXCHANGE` / `CCXT_API_KEY` / `CCXT_SECRET` | se `BROKER=ccxt` | — | 🔐 **Segreti** dell'exchange |
 | `CCXT_SANDBOX` | no | `true` | Usa la testnet dell'exchange |
 
-### Note operative su Render
+### Note operative
 
-- **Piano free**: il servizio va in *sleep* dopo ~15 minuti senza traffico HTTP.
-  Il keep-alive integrato (`KEEP_ALIVE=true`) pinga ogni 10 minuti l'URL
-  pubblico del servizio; come rete di sicurezza configura anche un ping
-  esterno gratuito (cron-job.org / UptimeRobot) su `https://<servizio>.onrender.com/health`.
-  Il free include 750 ore/mese: bastano per un solo servizio acceso 24/7.
-  Per un uso serio resta consigliato il piano *Starter*.
+- **Sempre attivo**: sulla VM il bot gira 24/7, senza sleep e senza ping esterni.
 - **Stato in memoria**: posizioni del paper broker e log si azzerano a ogni
-  deploy/riavvio. Per persistenza aggiungi un database (es. Render PostgreSQL).
+  deploy/riavvio del container. Per persistenza aggiungi un database (es. un
+  container PostgreSQL in `deploy/compose.yml`).
+- **Log**: sulla VM `sudo docker logs -f quant-trading-system`, oppure `/api/logs`.
 - **Yahoo Finance** può limitare le richieste da IP cloud: in quel caso il
   sistema passa automaticamente ai dati mock e lo segnala nei log e in
   `last_data_source_used` dello stato.

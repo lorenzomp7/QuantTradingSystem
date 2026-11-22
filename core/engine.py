@@ -4,7 +4,7 @@ core/engine.py
 Motore del bot: collega dati -> strategia -> broker in un ciclo periodico.
 
 Il loop gira come task asyncio nello stesso processo del web server, così un
-singolo Web Service su Render ospita sia la dashboard/API sia il bot. Le
+singolo container (VM Oracle) ospita sia l'API sia il bot. Le
 operazioni bloccanti (download dati, calcoli Pandas) sono delegate a un
 thread con `asyncio.to_thread` per non bloccare l'event loop di FastAPI.
 """
@@ -105,7 +105,7 @@ class TradingEngine:
 
         Si confronta lo *stato* del segnale con la posizione reale (invece di
         reagire solo all'evento di crossover): è più robusto a riavvii del
-        servizio, frequenti su Render (deploy, sleep del piano free).
+        servizio, (deploy e riavvii del container).
         """
         if not self._cycle_lock.acquire(blocking=False):
             raise RuntimeError("Un ciclo è già in esecuzione.")

@@ -4,8 +4,8 @@ config.py
 Configurazione centralizzata dell'applicazione.
 
 Tutti i parametri sono letti da variabili d'ambiente (12-factor app), così lo
-stesso codice gira identico in locale (file `.env`) e su Render (Environment
-Variables della dashboard o `render.yaml`). Nessun segreto è hard-coded.
+stesso codice gira identico in locale (file `.env`) e sulla VM Oracle
+(`deploy/compose.yml`, valori dai secret di GitHub). Nessun segreto è hard-coded.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-# In locale carichiamo un eventuale file .env; su Render non serve.
+# In locale carichiamo un eventuale file .env; nel container le variabili arrivano da Docker.
 try:
     from dotenv import load_dotenv
 
@@ -82,15 +82,16 @@ class Settings:
     # Avvia automaticamente il bot all'avvio del server (e dopo ogni riavvio).
     auto_start_bot: bool = field(default_factory=lambda: _env_bool("AUTO_START_BOT", True))
 
-    # --- Keep-alive ---------------------------------------------------------
-    # Il piano free di Render sospende il servizio dopo ~15 min senza traffico.
-    # Il keep-alive chiama periodicamente l'URL pubblico del servizio stesso.
-    # Render imposta da solo RENDER_EXTERNAL_URL; KEEP_ALIVE_URL lo sovrascrive.
-    keep_alive: bool = field(default_factory=lambda: _env_bool("KEEP_ALIVE", True))
-    keep_alive_url: str = field(
-        default_factory=lambda: os.getenv("KEEP_ALIVE_URL") or os.getenv("RENDER_EXTERNAL_URL", "")
+    # --- CORS ---------------------------------------------------------------
+    # Origini da cui il browser può chiamare l'API (la dashboard su GitHub Pages),
+    # separate da virgola. Vuoto = solo la dashboard servita dallo stesso server.
+    cors_origins: list[str] = field(
+        default_factory=lambda: [
+            o.strip().rstrip("/")
+            for o in os.getenv("CORS_ORIGINS", "https://lorenzomp7.github.io").split(",")
+            if o.strip()
+        ]
     )
-    keep_alive_interval_seconds: int = field(default_factory=lambda: _env_int("KEEP_ALIVE_INTERVAL_SECONDS", 600))
 
     # --- Broker -------------------------------------------------------------
     # "paper"  = broker simulato in memoria (default, sicuro)

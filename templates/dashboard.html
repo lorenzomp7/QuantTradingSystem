@@ -72,7 +72,10 @@
   </section>
 </main>
 
+<script src="config.js"></script>
 <script>
+// Su GitHub Pages config.js imposta l'indirizzo dell'API (window.QTS_API); dal server FastAPI è lo stesso host.
+const API = (window.QTS_API || "").replace(/\/$/, "");
 const $ = (id) => document.getElementById(id);
 let chart;
 try { $("apikey").value = localStorage.getItem("qts_api_key") || ""; } catch (e) {}
@@ -84,7 +87,7 @@ const kv = (obj) => Object.entries(obj).map(([k, v]) =>
 
 async function refresh() {
   try {
-    const s = await (await fetch("/api/status")).json();
+    const s = await (await fetch(API + "/api/status")).json();
     $("badge").textContent = s.running ? "RUNNING" : "STOPPED";
     $("badge").className = "badge " + (s.running ? "on" : "off");
     const sig = s.last_signal || {};
@@ -101,14 +104,14 @@ async function refresh() {
     $("account").innerHTML = kv({ Broker: a.broker, Cash: a.cash, "Valore posizioni": a.market_value,
       Equity: a.equity, "P&L": a.pnl, Posizioni: a.positions, Ordini: (a.orders || []).length });
 
-    const logs = await (await fetch("/api/logs?limit=100")).json();
+    const logs = await (await fetch(API + "/api/logs?limit=100")).json();
     $("logs").textContent = logs.reverse().map(l => `${l.timestamp.slice(0,19)} ${l.level.padEnd(7)} ${l.message}`).join("\n") || "Nessun log";
   } catch (e) { $("msg").textContent = "Errore di aggiornamento: " + e; }
 }
 
 async function control(action) {
   $("msg").textContent = "…";
-  const r = await fetch(`/api/bot/${action}`, { method: "POST", headers: { "X-API-Key": $("apikey").value } });
+  const r = await fetch(`${API}/api/bot/${action}`, { method: "POST", headers: { "X-API-Key": $("apikey").value } });
   const body = await r.json();
   $("msg").textContent = r.ok ? (body.detail || `${body.action} @ ${body.close}`) : `Errore ${r.status}: ${body.detail}`;
   refresh();
@@ -118,7 +121,7 @@ async function backtest() {
   const q = new URLSearchParams({ symbol: $("bt-symbol").value, short_window: $("bt-short").value,
     long_window: $("bt-long").value, period: $("bt-period").value });
   $("metrics").innerHTML = "<small>Calcolo in corso…</small>";
-  const r = await fetch("/api/backtest?" + q);
+  const r = await fetch(API + "/api/backtest?" + q);
   const body = await r.json();
   if (!r.ok) { $("metrics").innerHTML = `<small>Errore: ${esc(JSON.stringify(body.detail))}</small>`; return; }
   const m = body.metrics;
