@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/check_edit.py\"",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/run.sh\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/check_edit.py\"",
             "timeout": 60
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop_tests.py\"",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/run.sh\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop_tests.py\"",
             "timeout": 600
           }
         ]

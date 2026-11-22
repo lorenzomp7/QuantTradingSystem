@@ -15,6 +15,7 @@ AGENTS.md (importato sopra) vale per tutti gli agenti; qui solo ciò che riguard
 
 ### Hook automatici (`.claude/settings.json`)
 
+- Gli hook partono tramite `.claude/hooks/run.sh`, che usa il primo Python 3.9+ disponibile (`python3`, `python` o `py`). Se Python manca vengono saltati senza bloccare.
 - Dopo ogni modifica un controllo rapido del file (sintassi, nomi non definiti, JSON/YAML validi). Se segnala un errore, correggilo subito.
 - Prima di chiudere il turno, se hai modificato codice, partono `python -m pytest -q -x`. Se falliscono correggi, oppure spiega perché il problema non dipende dalle tue modifiche. Per disattivarli in una sessione: `CLAUDE_SKIP_STOP_TESTS=1`.
 
