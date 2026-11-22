@@ -1,0 +1,27 @@
+{
+  "watch": [
+    "*.py",
+    "requirements*.txt",
+    "templates/*",
+    "pytest.ini"
+  ],
+  "steps": [
+    {
+      "name": "pytest",
+      "probe": [
+        "python3",
+        "-c",
+        "import pytest, fastapi"
+      ],
+      "run": [
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "-x"
+      ],
+      "timeout": 180,
+      "setup": "pip install -r requirements-dev.txt"
+    }
+  ]
+}
