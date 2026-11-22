@@ -37,7 +37,8 @@ Gli altri secret dipendono dal progetto (vedi il README principale).
 
 Poi in **Settings → Pages → Build and deployment → Source** scegli **GitHub Actions**
 (se il progetto ha una parte su Pages) e lancia una volta da **Actions** i workflow
-*Deploy backend* e *GitHub Pages* (*Run workflow*). Dai push successivi su `main` si
+*Deploy backend* e *GitHub Pages* (*Run workflow*). Il primissimo deploy installa Docker sulla VM:
+fallo per un progetto alla volta, poi gli altri. Dai push successivi su `main` si
 aggiornano da soli.
 
 ## Indirizzi

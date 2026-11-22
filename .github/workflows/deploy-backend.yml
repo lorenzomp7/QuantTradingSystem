@@ -57,7 +57,7 @@ jobs:
       - name: Copia sulla VM e avvia
         run: |
           SSH="ssh -i $HOME/.ssh/id_vm"
-          $SSH "$VM_USER@$VM_HOST" "sudo mkdir -p /opt/apps/$APP && sudo chown \$USER /opt/apps/$APP"
+          $SSH "$VM_USER@$VM_HOST" "sudo mkdir -p /opt/apps/$APP && sudo chown \$USER /opt/apps/$APP && (command -v rsync >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq rsync))"
           rsync -az --delete -e "$SSH" --exclude .git --exclude __pycache__ ./ "$VM_USER@$VM_HOST:/opt/apps/$APP/"
           $SSH "$VM_USER@$VM_HOST" "bash /opt/apps/$APP/deploy/remote-deploy.sh $APP"
       - name: Controllo
