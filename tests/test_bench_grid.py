@@ -7,7 +7,7 @@ from tools import bench_grid
 
 def test_bench_grid_small_run(capsys):
     code = bench_grid.main(["--period", "1y", "--shorts", "3:12:3", "--longs", "20:50:10", "--repeat", "2",
-                            "--warmup", "0", "--max-spread", "1000", "--json"])
+                            "--warmup", "0", "--min-time", "0.01", "--max-spread", "1000", "--json"])
     report = json.loads(capsys.readouterr().out)
     assert code == 0
     assert report["same_results"] is True and report["combinations"] == 9

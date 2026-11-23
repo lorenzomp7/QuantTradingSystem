@@ -104,6 +104,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--longs", default="20:250:10")
     ap.add_argument("--repeat", type=int, default=5)
     ap.add_argument("--warmup", type=int, default=1, help="esecuzioni non misurate prima dei tempi")
+    ap.add_argument("--min-time", type=float, default=0.5, help="durata minima di ogni misura, secondi")
     ap.add_argument("--mode", choices=["both", "loop", "vector"], default="both")
     ap.add_argument("--max-spread", type=float, default=10.0,
                     help="scarto massimo ammesso tra le ripetizioni, %% (deviazione standard / media)")
@@ -132,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     for name, fn in jobs.items():
         for _ in range(args.warmup):
             fn()
-        times, number = timed(fn, args.repeat)
+        times, number = timed(fn, args.repeat, args.min_time)
         report[name] = {**summary(times), "calls_per_measure": number, "peak_mb": peak_memory_mb(fn)}
         if args.repeat > 1 and report[name]["spread_pct"] > args.max_spread:
             code = 1
