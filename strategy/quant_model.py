@@ -31,7 +31,11 @@ from dataclasses import asdict, dataclass, field
 import numpy as np
 import pandas as pd
 
-TRADING_DAYS_PER_YEAR = 252
+from strategy.metrics import DEFAULT_BARS_PER_YEAR, effective_bars_per_year, round_trip_stats
+
+# Valore storico, lasciato per compatibilità: le metriche ora usano il numero
+# di barre l'anno del mercato e dell'intervallo (vedi strategy/metrics.py).
+TRADING_DAYS_PER_YEAR = DEFAULT_BARS_PER_YEAR
 
 
 # ============================================================== Parametri
@@ -130,7 +134,12 @@ class BaseStrategy(ABC):
         return out
 
     # ----------------------------------------------------------- Backtest
-    def backtest(self, data: pd.DataFrame) -> BacktestResult:
+    def backtest(self, data: pd.DataFrame, bars_per_year: int | None = None) -> BacktestResult:
+        """
+        Backtest vettorizzato. `bars_per_year` è il fattore di annualizzazione
+        (es. `metrics.bars_per_year("5m", "crypto")`); se manca si misura
+        dalle date della serie.
+        """
         p = self.params
         sig = self.generate_signals(data)
 
@@ -160,6 +169,7 @@ class BaseStrategy(ABC):
             trades=trades,
             initial_capital=p.initial_capital,
             risk_free_rate=p.risk_free_rate,
+            bars_per_year=bars_per_year,
         )
         metrics["strategy"] = self.name
         metrics["params"] = asdict(p)
@@ -199,23 +209,31 @@ def compute_metrics(
     trades: pd.DataFrame,
     initial_capital: float,
     risk_free_rate: float = 0.0,
+    bars_per_year: int | None = None,
 ) -> dict:
-    """Metriche di performance standard (annualizzate su 252 giorni)."""
+    """
+    Metriche di performance standard.
+
+    Annualizzate con `bars_per_year` barre l'anno; se è None il fattore si
+    misura dalle date (`effective_bars_per_year`), come fa Vibe-Trading per
+    le serie di cui non si conosce il mercato.
+    """
     n = len(strategy_returns)
-    years = max(n / TRADING_DAYS_PER_YEAR, 1e-9)
+    bpy = int(bars_per_year) if bars_per_year else effective_bars_per_year(strategy_returns.index)
+    years = max(n / bpy, 1e-9)
 
     final_equity = float(equity.iloc[-1]) if n else initial_capital
     total_return = final_equity / initial_capital - 1
     cagr = (final_equity / initial_capital) ** (1 / years) - 1 if final_equity > 0 else -1.0
 
-    vol = float(strategy_returns.std(ddof=0) * np.sqrt(TRADING_DAYS_PER_YEAR))
-    excess = strategy_returns - risk_free_rate / TRADING_DAYS_PER_YEAR
+    vol = float(strategy_returns.std(ddof=0) * np.sqrt(bpy))
+    excess = strategy_returns - risk_free_rate / bpy
     std = excess.std(ddof=0)
-    sharpe = float(excess.mean() / std * np.sqrt(TRADING_DAYS_PER_YEAR)) if std > 0 else 0.0
+    sharpe = float(excess.mean() / std * np.sqrt(bpy)) if std > 0 else 0.0
 
     downside = excess[excess < 0].std(ddof=0)
     sortino = (
-        float(excess.mean() / downside * np.sqrt(TRADING_DAYS_PER_YEAR))
+        float(excess.mean() / downside * np.sqrt(bpy))
         if downside and downside > 0 else 0.0
     )
 
@@ -225,20 +243,14 @@ def compute_metrics(
 
     buy_hold = float((1 + asset_returns).prod() - 1)
 
-    # Win rate calcolato sui round-trip completi (BUY -> SELL).
-    wins, round_trips, entry = 0, 0, None
-    for _, row in trades.iterrows():
-        if row["side"] == "BUY":
-            entry = row["price"]
-        elif entry is not None:
-            round_trips += 1
-            wins += int(row["price"] > entry)
-            entry = None
+    # Statistiche sui round-trip completi (BUY -> SELL), al lordo dei costi.
+    rt = round_trip_stats(trades, equity.index)
 
     return {
         "start": strategy_returns.index[0].strftime("%Y-%m-%d") if n else None,
         "end": strategy_returns.index[-1].strftime("%Y-%m-%d") if n else None,
         "bars": n,
+        "bars_per_year": bpy,
         "initial_capital": round(initial_capital, 2),
         "final_equity": round(final_equity, 2),
         "total_return_pct": round(total_return * 100, 2),
@@ -249,6 +261,5 @@ def compute_metrics(
         "max_drawdown_pct": round(max_dd * 100, 2),
         "buy_and_hold_return_pct": round(buy_hold * 100, 2),
         "num_trades": int(len(trades)),
-        "round_trips": round_trips,
-        "win_rate_pct": round(wins / round_trips * 100, 2) if round_trips else None,
+        **rt,
     }

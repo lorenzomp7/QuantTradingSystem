@@ -36,6 +36,7 @@ from fastapi.responses import HTMLResponse
 from config import settings
 from core.engine import TradingEngine
 from strategy.quant_model import MovingAverageCrossover, StrategyParams
+from strategy.metrics import bars_per_year, infer_market
 from utils.keep_alive import keep_alive_loop
 from utils.logger import get_logger, memory_handler, setup_logging
 
@@ -159,7 +160,8 @@ async def run_backtest(
 
     def _job() -> dict:
         data = engine.fetcher.get_ohlcv(symbol, period, "1d")
-        result = MovingAverageCrossover(params).backtest(data)
+        bpy = bars_per_year("1d", infer_market(symbol))
+        result = MovingAverageCrossover(params).backtest(data, bars_per_year=bpy)
         out = result.to_dict()
         out["symbol"] = symbol.upper()
         out["data_source"] = engine.fetcher.last_source_used

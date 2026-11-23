@@ -64,3 +64,12 @@ def test_buy_sizing_works_with_expensive_asset():
     assert 0 < qty < 0.1
     eng.broker.submit_order("BTC-USD", "BUY", qty, 100_000.0)
     assert eng.broker.get_account()["cash"] >= 0
+
+
+def test_backtest_endpoint_annualizes_by_market():
+    # BTC è aperto 24/7: 365 barre giornaliere l'anno; SPY segue la borsa: 252.
+    with TestClient(main.app) as client:
+        btc = client.get("/api/backtest", params={"symbol": "BTC-USD"}).json()["metrics"]
+        spy = client.get("/api/backtest", params={"symbol": "SPY"}).json()["metrics"]
+        assert btc["bars_per_year"] == 365
+        assert spy["bars_per_year"] == 252
