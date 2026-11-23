@@ -23,6 +23,7 @@ FastAPI, con deploy su Render. Lavora su `main_claude` salvo indicazione diversa
 | Dati senza rete | `DATA_SOURCE=mock` |
 | Salute della fonte dati | `python -m utils.data_health` (usa la rete; esce con 1 se Yahoo non risponde) |
 | Prova della dashboard nel browser | `bash tools/smoke_dashboard.sh` (agent-browser; senza CDN: `ALLOW_NO_CHARTJS=1` o `CHARTJS_FILE=…/chart.umd.js`) |
+| Confronto con Vibe-Trading | `python tools/compare_external.py --vibe-python <python con vibe-trading-ai>` (ambiente separato, Python ≥ 3.11) |
 
 Esegui la verifica standard prima di dichiarare finito un cambio. Riporta i
 comandi davvero eseguiti e i loro esiti.
@@ -38,8 +39,11 @@ comandi davvero eseguiti e i loro esiti.
 - Il broker predefinito è e resta `paper`: non abilitare ordini reali, non
   aggiungere chiavi API ai file e non cambiare `render.yaml` senza richiesta.
 - I test non devono usare la rete: usa i dati mock.
-- Per confrontare il backtest con librerie esterne (backtesting.py, Backtrader)
-  usa stessi dati, commissioni e regole di esecuzione, e riporta le differenze.
+- Per confrontare il backtest con librerie esterne (Vibe-Trading, backtesting.py, Backtrader)
+  usa stessi dati, commissioni e regole di esecuzione, e riporta le differenze:
+  `tools/compare_external.py` lo fa già per Vibe-Trading.
+- Per scegliere parametri usa `strategy/research.py` (`walk_forward`): scelta solo sul
+  training, test fuori campione e periodo finale riservato. Mai scegliere sul test.
 
 ## Procedure per gli agenti (`.claude/skills/`)
 
@@ -47,7 +51,6 @@ comandi davvero eseguiti e i loro esiti.
   `agent-browser skills get core` e usa una `--session` tua. Per la dashboard c'è già
   `tools/smoke_dashboard.sh`: lancialo dopo ogni modifica a `templates/dashboard.html`
   o alle API che la alimentano (punti 19, 20 e 26 del Piano).
-
 - **Sicurezza** (`security-and-hardening`): leggila prima di toccare `execution/broker.py`
   (ordini, broker reali, chiavi API), l'autenticazione `X-API-Key`, CORS o `config.py`.
 - **Osservabilità** (`observability-and-instrumentation`): per log, metriche e avvisi del bot

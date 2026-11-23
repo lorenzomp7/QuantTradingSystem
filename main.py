@@ -12,6 +12,7 @@ Avvia un server FastAPI che espone:
     POST /api/bot/run-once    -> esegue un singolo ciclo         (protetto)
     GET  /api/signals         -> storico dei segnali generati
     GET  /api/backtest        -> backtest della strategia con parametri custom
+    GET  /api/backtest/costs  -> stesso backtest con commissioni ×1/×2/×3 e slippage 0/5 bps
     GET  /api/logs            -> ultimi log applicativi
     GET  /api/data-health     -> provenienza ed età dei dati (503 se mock di ripiego o vecchi)
     GET  /docs                -> documentazione OpenAPI interattiva (Swagger)
@@ -164,6 +165,39 @@ async def run_backtest(
         bpy = bars_per_year("1d", infer_market(symbol))
         result = MovingAverageCrossover(params).backtest(data, bars_per_year=bpy)
         out = result.to_dict()
+        out["symbol"] = symbol.upper()
+        out["data_source"] = engine.fetcher.last_source_used
+        return out
+
+    try:
+        return await asyncio.to_thread(_job)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/backtest/costs", tags=["strategy"])
+async def backtest_costs(
+    symbol: str = Query(default=settings.symbol, min_length=1, max_length=20),
+    short_window: int = Query(default=settings.short_window, ge=1, le=400),
+    long_window: int = Query(default=settings.long_window, ge=2, le=500),
+    period: str = Query(default="2y", pattern=r"^(1mo|3mo|6mo|1y|2y|5y|10y|ytd|max)$"),
+    fee_bps: float = Query(default=settings.fee_bps, ge=0, le=500),
+) -> dict:
+    """Sensibilità ai costi: rendimento con commissioni ×1/×2/×3 e slippage 0 o 5 bps."""
+    from strategy.research import cost_sensitivity
+
+    try:
+        params = StrategyParams(
+            short_window=short_window, long_window=long_window,
+            initial_capital=settings.initial_capital, fee_bps=fee_bps,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    def _job() -> dict:
+        data = engine.fetcher.get_ohlcv(symbol, period, "1d")
+        out = cost_sensitivity(MovingAverageCrossover(params), data,
+                               bars_per_year=bars_per_year("1d", infer_market(symbol)))
         out["symbol"] = symbol.upper()
         out["data_source"] = engine.fetcher.last_source_used
         return out

@@ -25,7 +25,8 @@ QuantTradingSystem/
 ├── strategy/
 │   ├── __init__.py
 │   ├── quant_model.py       # Moving Average Crossover, backtest e metriche
-│   └── metrics.py           # Barre/anno per mercato e intervallo, statistiche per trade
+│   ├── metrics.py           # Barre/anno per mercato e intervallo, statistiche per trade
+│   └── research.py          # Costi × slippage, walk-forward con periodo finale riservato
 ├── utils/
 │   ├── __init__.py
 │   ├── data_fetcher.py      # Dati OHLCV: Yahoo Finance + fallback mock (GBM), provenienza
@@ -56,6 +57,8 @@ QuantTradingSystem/
 | `main.py` | App FastAPI: dashboard `/`, `/health`, `/api/status`, `/api/bot/{start,stop,run-once}`, `/api/signals`, `/api/backtest`, `/api/data-health`, `/api/logs`, Swagger su `/docs` |
 | `strategy/quant_model.py` | `MovingAverageCrossover` (SMA breve vs SMA lunga), backtest senza look-ahead bias, costi in bps, metriche (CAGR, Sharpe, Sortino, Max Drawdown, win rate) |
 | `strategy/metrics.py` | Barre per anno per mercato (crypto 24/7, azioni, forex) e intervallo, oppure misurate dalle date; profit factor e altre statistiche per trade |
+| `strategy/research.py` | `cost_sensitivity` (commissioni ×1/×2/×3 e slippage 0/5 bps, `/api/backtest/costs` e tabella in dashboard) e `walk_forward` (parametri scelti solo sul training, test fuori campione, periodo finale riservato) |
+| `tools/compare_external.py` | Confronto con Vibe-Trading sugli stessi dati, commissioni e prezzi di esecuzione |
 | `utils/data_fetcher.py` | `MarketDataFetcher` con cache TTL; Yahoo Finance via `yfinance`, fallback su serie GBM deterministica, sempre dichiarato (`DataInfo`) |
 | `utils/data_health.py` | `python -m utils.data_health`: prova BTC-USD e SPY su Yahoo senza ripiego, esce con 1 se una fonte non risponde o è vecchia |
 | `core/engine.py` | `TradingEngine`: ciclo periodico asincrono che allinea la posizione al segnale |
@@ -100,6 +103,28 @@ il segnale ma **non invia ordini** (`orders_blocked` nel segnale).
 ```bash
 python -m utils.data_health                 # 0 = Yahoo sano, 1 = fonte bloccata o vecchia
 curl -f https://<servizio>/api/data-health  # 503 quando il bot non invierebbe ordini
+```
+
+### Confronto con Vibe-Trading e studi fuori campione
+
+[Vibe-Trading](https://github.com/HKUDS/Vibe-Trading) (MIT) è un secondo motore di backtest
+indipendente. Si installa in un ambiente separato (Python ≥ 3.11) e si confronta così:
+
+```bash
+python3.11 -m venv ~/.venvs/vibe && ~/.venvs/vibe/bin/pip install vibe-trading-ai
+python tools/compare_external.py --vibe-python ~/.venvs/vibe/bin/python    # 0 = differenze in tolleranza
+```
+
+I dati del confronto hanno open(t) = close(t-1), così l'esecuzione al close della barra del
+segnale (QTS) e all'open della barra dopo (Vibe-Trading) avvengono allo stesso prezzo; la
+chiusura forzata di fine backtest di Vibe-Trading viene addebitata anche a QTS. Sul mock
+BTC-USD 2 anni (SMA 20/50, 5 bps) l'equity finale differisce dello 0,0005%, sul mock SPY
+5 anni (SMA 10/30, 10 bps) dello 0,0033%, con gli stessi trade.
+
+```python
+from strategy.research import walk_forward
+walk_forward(MovingAverageCrossover, data, [{"short_window": 10, "long_window": 50}, …],
+             train_bars=400, test_bars=150, holdout_bars=150)
 ```
 
 ### Prova della dashboard nel browser

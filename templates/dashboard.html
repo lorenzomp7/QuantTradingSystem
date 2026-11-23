@@ -26,6 +26,8 @@
   .on { background:rgba(34,197,94,.15); color:var(--green); } .off { background:rgba(239,68,68,.15); color:var(--red); }
   pre { background:#0b0f14; border-radius:6px; padding:10px; font-size:12px; max-height:320px; overflow:auto; margin:0; white-space:pre-wrap; word-break:break-word; }
   .metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px; margin:12px 0; }
+  table.costs { border-collapse:collapse; font-size:13px; } table.costs th, table.costs td { padding:4px 10px; text-align:right; border-bottom:1px solid var(--border); }
+  table.costs th { color:var(--muted); font-weight:500; }
   .metric { background:#0b0f14; border-radius:6px; padding:8px; } .metric b { display:block; font-size:18px; } .metric small { color:var(--muted); }
   #msg { font-size:13px; color:var(--muted); min-height:18px; margin-top:8px; }
 </style>
@@ -64,6 +66,8 @@
     <div class="metrics" id="metrics"></div>
     <div style="position:relative; height:300px;"><canvas id="chart"></canvas></div>
     <small style="color:var(--muted)">Blu = investito · grigio tratteggiato = in liquidità (equity ferma) · arancio = Buy &amp; Hold · <span style="color:var(--green)">●</span> BUY / <span style="color:var(--red)">●</span> SELL</small>
+    <h2 style="margin-top:16px;">Sensibilità ai costi (rendimento %)</h2>
+    <div id="costs" style="overflow-x:auto;"><small>—</small></div>
   </section>
 
   <section class="card wide">
@@ -129,6 +133,7 @@ async function backtest() {
     "Sharpe": m.sharpe_ratio, "Max DD %": m.max_drawdown_pct, "Trade": m.num_trades, "Win rate %": m.win_rate_pct ?? "—",
     "Dati": body.data_source };
   $("metrics").innerHTML = Object.entries(show).map(([k, v]) => `<div class="metric"><small>${esc(k)}</small><b>${esc(v)}</b></div>`).join("");
+  costs(q);
   const pts = body.equity_curve, labels = pts.map(p => p.date);
   // Marker sui trade: BUY verde, SELL rosso (i trade cadono sulla barra del segnale).
   const tradeAt = Object.fromEntries((body.trades || []).map(t => [t.date, t.side]));
@@ -154,6 +159,25 @@ async function backtest() {
                      return [pts[i].in_market ? "Posizione: LONG" : "Posizione: liquidità", side[i] ? `Trade: ${side[i]}` : ""].filter(Boolean);
                    } } } } } });
   }
+}
+
+async function costs(q) {
+  // Tabella commissioni × slippage dallo stesso backtest (/api/backtest/costs).
+  const r = await fetch("/api/backtest/costs?" + q);
+  const body = await r.json();
+  if (!r.ok) { $("costs").innerHTML = `<small>Errore: ${esc(JSON.stringify(body.detail))}</small>`; return; }
+  const mults = [...new Set(body.rows.map(x => x.fee_multiplier))];
+  const slips = [...new Set(body.rows.map(x => x.slippage_bps))];
+  const cell = (m, s) => body.rows.find(x => x.fee_multiplier === m && x.slippage_bps === s);
+  const head = `<tr><th>Slippage \\ Commissioni</th>${mults.map(m => `<th>×${esc(m)}</th>`).join("")}</tr>`;
+  const rows = slips.map(s => `<tr><th>${esc(s)} bps</th>${mults.map(m => {
+    const c = cell(m, s); const v = c ? c.total_return_pct : null;
+    const color = v === null ? "" : v >= 0 ? "var(--green)" : "var(--red)";
+    return `<td style="color:${color}" title="Sharpe ${esc(c && c.sharpe_ratio)}">${esc(v ?? "—")}</td>`; }).join("")}</tr>`).join("");
+  const be = body.break_even_brackets.length
+    ? `<small>Il rendimento cambia segno tra ${body.break_even_brackets.map(b => `×${b.fee_multiplier_interval.join(" e ×")} (slippage ${b.slippage_bps} bps)`).map(esc).join("; ")}.</small>`
+    : "";
+  $("costs").innerHTML = `<table class="costs">${head}${rows}</table>${be}`;
 }
 
 refresh(); backtest(); setInterval(refresh, 10000);
