@@ -24,6 +24,7 @@ FastAPI, con deploy su Render. Lavora su `main_claude` salvo indicazione diversa
 | Salute della fonte dati | `python -m utils.data_health` (usa la rete; esce con 1 se Yahoo non risponde) |
 | Prova della dashboard nel browser | `bash tools/smoke_dashboard.sh` (agent-browser; senza CDN: `ALLOW_NO_CHARTJS=1` o `CHARTJS_FILE=…/chart.umd.js`) |
 | Confronto con Vibe-Trading | `python tools/compare_external.py --vibe-python <python con vibe-trading-ai>` (ambiente separato, Python ≥ 3.11) |
+| Benchmark della griglia | `python tools/bench_grid.py` (ciclo contro vettorizzata; profilo: `flameox capture --provider py-spy --operation rank_cpu_hotspots -- python tools/bench_grid.py --mode loop --repeat 1`) |
 
 Esegui la verifica standard prima di dichiarare finito un cambio. Riporta i
 comandi davvero eseguiti e i loro esiti.

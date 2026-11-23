@@ -168,3 +168,34 @@ def test_genetic_search_on_fuzzy_strategy(data):
     p = out["best"]["parameters"]
     assert 0.0 <= p["threshold"] <= 0.5 and 20 <= p["rsi_low"] <= 40
     assert np.isfinite(out["best"]["score"])
+
+
+# ----------------------------------------------- Griglia SMA vettorizzata
+@pytest.mark.parametrize("bpy", [252, None])
+def test_vectorized_sma_grid_matches_loop(data, bpy):
+    from strategy.optimization import sma_grid_vectorized
+
+    shorts, longs = list(range(3, 31, 3)), list(range(10, 121, 10))
+    base = StrategyParams(fee_bps=7, initial_capital=25_000)
+    loop = grid_search(MovingAverageCrossover, data, {"short_window": shorts, "long_window": longs},
+                       base_params=base, bars_per_year=bpy)
+    vec = sma_grid_vectorized(data, shorts, longs, base_params=base, bars_per_year=bpy)
+    key = lambda r: (r["parameters"]["short_window"], r["parameters"]["long_window"])  # noqa: E731
+    assert sorted(map(key, loop)) == sorted(map(key, vec))
+    by_loop = {key(r): r for r in loop}
+    for r in vec:
+        expected = by_loop[key(r)]
+        assert r["score"] == pytest.approx(expected["score"], abs=1e-3)
+        for k, v in expected["metrics"].items():
+            assert r["metrics"][k] == pytest.approx(v, abs=0.011), (key(r), k)
+    assert key(vec[0]) == key(loop[0])
+
+
+def test_vectorized_sma_grid_objectives(data):
+    from strategy.optimization import sma_grid_vectorized
+
+    out = sma_grid_vectorized(data, [5, 10], [20, 40], base_params=StrategyParams(), objective="total_return",
+                              bars_per_year=252)
+    assert [r["score"] for r in out] == sorted((r["metrics"]["total_return_pct"] for r in out), reverse=True)
+    with pytest.raises(ValueError):
+        sma_grid_vectorized(data, [5], [20], base_params=StrategyParams(), objective="nope")

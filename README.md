@@ -126,6 +126,28 @@ backtest, non che una renda più dell'altra sul mercato vero. Sul mock SPY la gr
 (90 combinazioni) trova 30/71 con Sharpe 1,09; l'algoritmo genetico (seme 7, 117
 valutazioni) trova 29/72 con Sharpe 1,14, in campione.
 
+### Griglia di parametri: ciclo contro versione vettorizzata (punto 15)
+
+`sma_grid_vectorized` calcola tutte le coppie SMA in un'unica matrice numpy e dà gli
+stessi risultati di `grid_search` (un backtest per coppia). `tools/bench_grid.py` lo
+verifica e misura i tempi (5 ripetizioni; ogni misura dura almeno 0,5 s):
+
+| Mock SPY 5 anni, 1260 barre, 617 coppie | Tempo per griglia (mediana) | Scarto | Picco memoria |
+|---|---:|---:|---:|
+| Ciclo (`grid_search`) | 3,08 s | 2,7% | 0,8 MB |
+| Vettorizzata (`sma_grid_vectorized`) | 0,032 s | 6,4% | 62,7 MB |
+
+Circa 96× più veloce, al prezzo di più memoria (matrici coppie × barre): con griglie
+molto grandi sulla VM conviene dividerle a blocchi. Profilo con
+[flameox](https://github.com/morluto/flameox) e py-spy: il ciclo spende il tempo
+nell'overhead di pandas di ogni singolo backtest.
+
+```bash
+python tools/bench_grid.py                                   # esce con 1 se i risultati differiscono
+pip install flameox py-spy
+flameox capture --provider py-spy --operation rank_cpu_hotspots -- python tools/bench_grid.py --mode loop --repeat 1
+```
+
 ### Confronto con Vibe-Trading e studi fuori campione
 
 [Vibe-Trading](https://github.com/HKUDS/Vibe-Trading) (MIT) è un secondo motore di backtest

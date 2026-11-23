@@ -143,3 +143,76 @@ def genetic_search(
     if best is None:
         raise ValueError("Nessuna combinazione valida trovata nello spazio indicato.")
     return {"best": best, "history": history, "evaluations": len(cache), "objective": objective}
+
+
+def sma_grid_vectorized(
+    data: pd.DataFrame,
+    shorts: Sequence[int],
+    longs: Sequence[int],
+    base_params,
+    objective: str = "sharpe",
+    bars_per_year: int | None = None,
+) -> list[dict]:
+    """
+    Stessa griglia di `grid_search(MovingAverageCrossover, …)`, calcolata in blocco.
+
+    Le medie mobili si calcolano una volta per finestra (con pandas, come la
+    strategia, per avere gli stessi confronti), poi segnali, posizioni, costi,
+    equity e metriche di tutte le coppie short < long stanno in matrici numpy
+    (coppie × barre). Stesse regole del backtest: posizione in t = segnale di
+    t-1, `fee_bps` su ogni cambio di posizione.
+    """
+    from strategy.metrics import effective_bars_per_year
+
+    _score({"sharpe_ratio": 0.0, "total_return_pct": 0.0}, objective)
+    pairs = [(s, l) for s in shorts for l in longs if 1 <= s < l and l >= 2 and l <= len(data)]
+    if not pairs:
+        return []
+    close = data["close"].astype(float)
+    n = len(close)
+    windows = sorted({w for p in pairs for w in p})
+    sma = {w: close.rolling(w, min_periods=w).mean().to_numpy() for w in windows}
+
+    s_idx = np.array([p[0] for p in pairs])
+    l_idx = np.array([p[1] for p in pairs])
+    short_m = np.vstack([sma[w] for w in s_idx])
+    long_m = np.vstack([sma[w] for w in l_idx])
+    with np.errstate(invalid="ignore"):
+        signal = ((short_m > long_m) & ~np.isnan(long_m)).astype(float)
+
+    held = np.zeros_like(signal)
+    held[:, 1:] = signal[:, :-1]
+    turnover = np.abs(np.diff(held, axis=1, prepend=0.0))
+    asset_ret = close.pct_change().fillna(0.0).to_numpy()
+    fee = base_params.fee_bps / 10_000
+    ret = held * asset_ret - turnover * fee
+    capital = float(base_params.initial_capital)
+    equity = capital * np.cumprod(1 + ret, axis=1)
+
+    bpy = int(bars_per_year) if bars_per_year else effective_bars_per_year(close.index)
+    years = max(n / bpy, 1e-9)
+    final = equity[:, -1]
+    total = final / capital - 1
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cagr = np.where(final > 0, (final / capital) ** (1 / years) - 1, -1.0)
+    excess = ret - base_params.risk_free_rate / bpy
+    std = excess.std(axis=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        sharpe = np.where(std > 0, excess.mean(axis=1) / std * np.sqrt(bpy), 0.0)
+    max_dd = (equity / np.maximum.accumulate(equity, axis=1) - 1).min(axis=1)
+    trades = (np.diff(signal, axis=1) != 0).sum(axis=1)
+
+    out = []
+    for i, (s, l) in enumerate(pairs):
+        m = {
+            "total_return_pct": round(float(total[i]) * 100, 2),
+            "cagr_pct": round(float(cagr[i]) * 100, 2),
+            "sharpe_ratio": round(float(sharpe[i]), 3),
+            "max_drawdown_pct": round(float(max_dd[i]) * 100, 2),
+            "num_trades": int(trades[i]),
+        }
+        score = _score(m, objective)
+        if np.isfinite(score):
+            out.append({"parameters": {"short_window": int(s), "long_window": int(l)},
+                        "score": round(score, 6), "metrics": m})
+    return sorted(out, key=lambda r: r["score"], reverse=True)
