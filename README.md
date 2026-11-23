@@ -25,6 +25,9 @@ QuantTradingSystem/
 ├── strategy/
 │   ├── __init__.py
 │   ├── quant_model.py       # Moving Average Crossover, backtest e metriche
+│   ├── rsi_macd.py          # RSI + MACD + stocastico con regole fuzzy (long-only)
+│   ├── indicators.py        # RSI di Wilder, istogramma MACD, stocastico %K
+│   ├── optimization.py      # Ricerca dei parametri: griglia o algoritmo genetico
 │   ├── metrics.py           # Barre/anno per mercato e intervallo, statistiche per trade
 │   └── research.py          # Costi × slippage, walk-forward con periodo finale riservato
 ├── utils/
@@ -57,6 +60,8 @@ QuantTradingSystem/
 | `main.py` | App FastAPI: dashboard `/`, `/health`, `/api/status`, `/api/bot/{start,stop,run-once}`, `/api/signals`, `/api/backtest`, `/api/data-health`, `/api/logs`, Swagger su `/docs` |
 | `strategy/quant_model.py` | `MovingAverageCrossover` (SMA breve vs SMA lunga), backtest senza look-ahead bias, costi in bps, metriche (CAGR, Sharpe, Sortino, Max Drawdown, win rate) |
 | `strategy/metrics.py` | Barre per anno per mercato (crypto 24/7, azioni, forex) e intervallo, oppure misurate dalle date; profit factor e altre statistiche per trade |
+| `strategy/rsi_macd.py` | `RsiMacdFuzzy`: seconda strategia, stessa interfaccia di `MovingAverageCrossover`. Regole fuzzy su RSI, istogramma MACD (z-score mobile) e stocastico, dalla tesi THESIS-fuzzylogic-stocks (codice riscritto) |
+| `strategy/optimization.py` | `grid_search` e `genetic_search` (torneo, incrocio uniforme, mutazione, elitismo; obiettivo Sharpe, rendimento o 0,7·guadagno + 0,3·Sharpe come nella tesi). Risultati in campione: per la scelta vera usare `walk_forward` |
 | `strategy/research.py` | `cost_sensitivity` (commissioni ×1/×2/×3 e slippage 0/5 bps, `/api/backtest/costs` e tabella in dashboard) e `walk_forward` (parametri scelti solo sul training, test fuori campione, periodo finale riservato) |
 | `tools/compare_external.py` | Confronto con Vibe-Trading sugli stessi dati, commissioni e prezzi di esecuzione |
 | `utils/data_fetcher.py` | `MarketDataFetcher` con cache TTL; Yahoo Finance via `yfinance`, fallback su serie GBM deterministica, sempre dichiarato (`DataInfo`) |
@@ -104,6 +109,22 @@ il segnale ma **non invia ordini** (`orders_blocked` nel segnale).
 python -m utils.data_health                 # 0 = Yahoo sano, 1 = fonte bloccata o vecchia
 curl -f https://<servizio>/api/data-health  # 503 quando il bot non invierebbe ordini
 ```
+
+### Seconda strategia e ottimizzazione genetica
+
+Sugli stessi dati mock (2 anni, 10.000, 5 bps):
+
+| Dati | Strategia | Rend. % | CAGR % | Sharpe | Max DD % | Trade | Buy & Hold % |
+|---|---|---:|---:|---:|---:|---:|---:|
+| SPY | SMA 20/50 | 0,69 | 0,34 | 0,09 | −14,65 | 9 | 1,08 |
+| SPY | RSI/MACD fuzzy | 5,03 | 2,49 | 0,24 | −19,11 | 16 | 1,08 |
+| BTC-USD | SMA 20/50 | 24,09 | 16,92 | 0,99 | −15,27 | 9 | 50,52 |
+| BTC-USD | RSI/MACD fuzzy | 33,50 | 23,27 | 1,24 | −10,48 | 17 | 50,52 |
+
+Sono dati sintetici: la tabella mostra che le due strategie funzionano con lo stesso
+backtest, non che una renda più dell'altra sul mercato vero. Sul mock SPY la griglia SMA
+(90 combinazioni) trova 30/71 con Sharpe 1,09; l'algoritmo genetico (seme 7, 117
+valutazioni) trova 29/72 con Sharpe 1,14, in campione.
 
 ### Confronto con Vibe-Trading e studi fuori campione
 
