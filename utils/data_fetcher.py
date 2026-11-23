@@ -19,7 +19,7 @@ from __future__ import annotations
 import threading
 import time
 import zlib
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -60,9 +60,38 @@ class DataFetchError(RuntimeError):
 
 
 @dataclass
+class DataInfo:
+    """
+    Provenienza di una serie OHLCV, restituita insieme ai dati.
+
+    Come il gateway dati di Vibe-Trading: si sa sempre da dove arriva il dato
+    (`source`), da dove lo si voleva (`requested_source`) e se è un ripiego
+    (`fallback`), così il bot può fermarsi invece di operare su dati simulati.
+    """
+
+    symbol: str
+    interval: str
+    requested_source: str
+    source: str
+    rows: int
+    last_bar: str | None
+    fetched_at: float
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def fallback(self) -> bool:
+        return self.source != self.requested_source
+
+    def to_dict(self) -> dict:
+        out = asdict(self)
+        out["fallback"] = self.fallback
+        return out
+
+
+@dataclass
 class _CacheEntry:
     data: pd.DataFrame
-    source: str
+    info: DataInfo
     expires_at: float
 
 
@@ -80,6 +109,7 @@ class MarketDataFetcher:
         self._cache: dict[tuple, _CacheEntry] = {}
         self._lock = threading.Lock()
         self.last_source_used: str | None = None
+        self.last_info: DataInfo | None = None
 
     # ------------------------------------------------------------------ API
     def get_ohlcv(
@@ -90,6 +120,16 @@ class MarketDataFetcher:
         use_cache: bool = True,
     ) -> pd.DataFrame:
         """Restituisce i dati OHLCV per `symbol`, usando la cache se valida."""
+        return self.get_ohlcv_with_info(symbol, period, interval, use_cache)[0]
+
+    def get_ohlcv_with_info(
+        self,
+        symbol: str,
+        period: str = "2y",
+        interval: str = "1d",
+        use_cache: bool = True,
+    ) -> tuple[pd.DataFrame, DataInfo]:
+        """Come `get_ohlcv`, ma restituisce anche la provenienza (`DataInfo`)."""
         period = clamp_period(period, interval)
         key = (symbol.upper(), period, interval, self.source)
         now = time.monotonic()
@@ -98,26 +138,40 @@ class MarketDataFetcher:
             with self._lock:
                 entry = self._cache.get(key)
             if entry and entry.expires_at > now:
-                self.last_source_used = entry.source
-                return entry.data.copy()
+                self.last_source_used = entry.info.source
+                self.last_info = entry.info
+                return entry.data.copy(), entry.info
 
+        warnings: list[str] = []
         if self.source == "yahoo":
             try:
                 df = fetch_yahoo(symbol, period, interval)
                 used = "yahoo"
             except Exception as exc:  # rete assente, rate limit, ticker errato...
                 logger.warning("Yahoo Finance non disponibile (%s): uso dati mock.", exc)
+                warnings.append(f"Yahoo non disponibile ({type(exc).__name__}: {exc}): serie mock")
                 df = generate_mock_ohlcv(symbol, period, interval)
                 used = "mock"
         else:
             df = generate_mock_ohlcv(symbol, period, interval)
             used = "mock"
 
+        info = DataInfo(
+            symbol=symbol.upper(),
+            interval=interval,
+            requested_source=self.source,
+            source=used,
+            rows=len(df),
+            last_bar=df.index[-1].isoformat() if len(df) else None,
+            fetched_at=time.time(),
+            warnings=warnings,
+        )
         with self._lock:
-            self._cache[key] = _CacheEntry(df, used, now + self.cache_ttl_seconds)
+            self._cache[key] = _CacheEntry(df, info, now + self.cache_ttl_seconds)
         self.last_source_used = used
+        self.last_info = info
         logger.info("Caricate %d barre per %s (%s, %s) da '%s'.", len(df), symbol, period, interval, used)
-        return df.copy()
+        return df.copy(), info
 
     def clear_cache(self) -> None:
         with self._lock:
@@ -190,6 +244,62 @@ def generate_mock_ohlcv(
         {"open": open_, "high": high, "low": low, "close": close, "volume": volume},
         index=index,
     )
+
+
+# ------------------------------------------------------------- Freschezza
+def interval_timedelta(interval: str) -> pd.Timedelta:
+    """Durata di una candela (1d per giornaliero, 7d per settimanale, …)."""
+    minutes = _INTERVAL_MINUTES.get(interval)
+    if minutes:
+        return pd.Timedelta(minutes=minutes)
+    return {"5d": pd.Timedelta(days=5), "1wk": pd.Timedelta(days=7),
+            "1mo": pd.Timedelta(days=31), "3mo": pd.Timedelta(days=92)}.get(interval, pd.Timedelta(days=1))
+
+
+def max_bar_age(interval: str) -> pd.Timedelta:
+    """
+    Età massima dell'ultima candela prima di considerare i dati vecchi.
+
+    Intraday: 10 candele, almeno un'ora. Giornaliero: 7 giorni (fine
+    settimana e festività). Settimanale e mensile: due candele più un margine.
+    """
+    minutes = _INTERVAL_MINUTES.get(interval)
+    if minutes:
+        return pd.Timedelta(minutes=max(10 * minutes, 60))
+    if interval in {"1d", "5d"}:
+        return pd.Timedelta(days=7 if interval == "1d" else 12)
+    return 2 * interval_timedelta(interval) + pd.Timedelta(days=3)
+
+
+def utc_now() -> pd.Timestamp:
+    """Ora attuale in UTC senza fuso, come l'indice dei dati normalizzati."""
+    return pd.Timestamp.now(tz="UTC").tz_localize(None)
+
+
+def bar_age(last_bar: str | pd.Timestamp | None, now: pd.Timestamp | None = None) -> pd.Timedelta | None:
+    """Età dell'ultima candela (0 se è nel futuro per pochi minuti di fuso)."""
+    if last_bar is None:
+        return None
+    age = (now or utc_now()) - pd.Timestamp(last_bar)
+    return max(age, pd.Timedelta(0))
+
+
+def order_block_reason(info: DataInfo, now: pd.Timestamp | None = None) -> str | None:
+    """
+    Motivo per cui il bot non deve inviare ordini con questi dati, o None.
+
+    Regola del punto 1 del Piano: si opera solo sulla fonte richiesta e con
+    dati recenti. Il ripiego sulla serie mock non è mai silenzioso.
+    """
+    if info.fallback:
+        return f"dati {info.source} al posto di {info.requested_source}: nessun ordine"
+    if info.rows == 0 or info.last_bar is None:
+        return "nessun dato: nessun ordine"
+    age = bar_age(info.last_bar, now)
+    limit = max_bar_age(info.interval)
+    if age is not None and age > limit:
+        return f"dati vecchi (ultima candela {info.last_bar}, età {age}, limite {limit}): nessun ordine"
+    return None
 
 
 # ------------------------------------------------------------- Utilities

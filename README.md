@@ -24,10 +24,12 @@ QuantTradingSystem/
 │   └── engine.py            # Loop del bot: dati -> strategia -> broker
 ├── strategy/
 │   ├── __init__.py
-│   └── quant_model.py       # Moving Average Crossover, backtest e metriche
+│   ├── quant_model.py       # Moving Average Crossover, backtest e metriche
+│   └── metrics.py           # Barre/anno per mercato e intervallo, statistiche per trade
 ├── utils/
 │   ├── __init__.py
-│   ├── data_fetcher.py      # Dati OHLCV: Yahoo Finance + fallback mock (GBM)
+│   ├── data_fetcher.py      # Dati OHLCV: Yahoo Finance + fallback mock (GBM), provenienza
+│   ├── data_health.py       # Controllo della fonte dati con simboli canarino
 │   └── logger.py            # Logging su stdout + buffer in memoria per /api/logs
 ├── execution/
 │   ├── __init__.py
@@ -50,9 +52,11 @@ QuantTradingSystem/
 
 | File | Ruolo |
 |---|---|
-| `main.py` | App FastAPI: dashboard `/`, `/health`, `/api/status`, `/api/bot/{start,stop,run-once}`, `/api/signals`, `/api/backtest`, `/api/logs`, Swagger su `/docs` |
+| `main.py` | App FastAPI: dashboard `/`, `/health`, `/api/status`, `/api/bot/{start,stop,run-once}`, `/api/signals`, `/api/backtest`, `/api/data-health`, `/api/logs`, Swagger su `/docs` |
 | `strategy/quant_model.py` | `MovingAverageCrossover` (SMA breve vs SMA lunga), backtest senza look-ahead bias, costi in bps, metriche (CAGR, Sharpe, Sortino, Max Drawdown, win rate) |
-| `utils/data_fetcher.py` | `MarketDataFetcher` con cache TTL; Yahoo Finance via `yfinance`, fallback automatico su serie GBM deterministica |
+| `strategy/metrics.py` | Barre per anno per mercato (crypto 24/7, azioni, forex) e intervallo, oppure misurate dalle date; profit factor e altre statistiche per trade |
+| `utils/data_fetcher.py` | `MarketDataFetcher` con cache TTL; Yahoo Finance via `yfinance`, fallback su serie GBM deterministica, sempre dichiarato (`DataInfo`) |
+| `utils/data_health.py` | `python -m utils.data_health`: prova BTC-USD e SPY su Yahoo senza ripiego, esce con 1 se una fonte non risponde o è vecchia |
 | `core/engine.py` | `TradingEngine`: ciclo periodico asincrono che allinea la posizione al segnale |
 | `execution/broker.py` | `PaperBroker` in memoria; `AlpacaBroker` e `CcxtBroker` pronti da completare |
 
@@ -83,6 +87,22 @@ cp .env.example .env                                   # poi modifica i valori
 uvicorn main:app --reload --port 10000                 # http://localhost:10000
 pytest -q                                              # test (dati mock, offline)
 ```
+
+### Dati: provenienza e blocco degli ordini
+
+Se Yahoo non risponde il fetcher usa la serie mock, ma lo dichiara: `/api/status`
+(campo `data`) e `/api/data-health` riportano fonte richiesta, fonte usata,
+ultima candela ed età. Con dati mock di ripiego o troppo vecchi il bot calcola
+il segnale ma **non invia ordini** (`orders_blocked` nel segnale).
+
+```bash
+python -m utils.data_health                 # 0 = Yahoo sano, 1 = fonte bloccata o vecchia
+curl -f https://<servizio>/api/data-health  # 503 quando il bot non invierebbe ordini
+```
+
+Le metriche del backtest sono annualizzate con il numero di barre l'anno del
+mercato e dell'intervallo (`bars_per_year` nelle metriche): 365 per BTC
+giornaliero, 252 per SPY, 365 × 288 per BTC a 5 minuti.
 
 ---
 

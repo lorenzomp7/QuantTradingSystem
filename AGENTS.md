@@ -21,6 +21,7 @@ FastAPI, con deploy su Render. Lavora su `main_claude` salvo indicazione diversa
 | **Verifica standard** | `python -m pytest -q` (circa 3 s, gira anche in CI) |
 | Avvio locale | `cp .env.example .env` poi `uvicorn main:app --reload --port 10000` |
 | Dati senza rete | `DATA_SOURCE=mock` |
+| Salute della fonte dati | `python -m utils.data_health` (usa la rete; esce con 1 se Yahoo non risponde) |
 
 Esegui la verifica standard prima di dichiarare finito un cambio. Riporta i
 comandi davvero eseguiti e i loro esiti.

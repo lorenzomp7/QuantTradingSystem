@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from config import Settings
 from execution.broker import BaseBroker, PaperBroker, create_broker
 from strategy.quant_model import BaseStrategy, MovingAverageCrossover, StrategyParams
-from utils.data_fetcher import MarketDataFetcher
+from utils.data_fetcher import MarketDataFetcher, bar_age, order_block_reason
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -86,6 +86,7 @@ class TradingEngine:
             "data_interval": self.cfg.data_interval,
             "data_period": self.cfg.data_period,
             "last_data_source_used": self.fetcher.last_source_used,
+            "data": self._data_status(),
             "loop_interval_seconds": self.cfg.loop_interval_seconds,
             "started_at": self.started_at,
             "last_run_at": self.last_run_at,
@@ -110,8 +111,13 @@ class TradingEngine:
         if not self._cycle_lock.acquire(blocking=False):
             raise RuntimeError("Un ciclo è già in esecuzione.")
         try:
-            data = self.fetcher.get_ohlcv(self.symbol, self.cfg.data_period, self.cfg.data_interval)
+            data, info = self.fetcher.get_ohlcv_with_info(
+                self.symbol, self.cfg.data_period, self.cfg.data_interval
+            )
             price = float(data["close"].iloc[-1])  # ultimo prezzo disponibile
+            # Dati di ripiego (mock al posto di Yahoo) o vecchi: si calcola il
+            # segnale ma non si inviano ordini (punto 1 del Piano).
+            blocked = order_block_reason(info)
 
             # Con candele intraday l'ultima barra è ancora "in formazione": il
             # segnale si calcola solo sulle candele chiuse, per non far
@@ -127,7 +133,9 @@ class TradingEngine:
 
             position = self.broker.get_position(self.symbol)
             order = None
-            if signal["signal"] == 1 and position <= 0:
+            if blocked:
+                logger.warning("Ordini sospesi su %s: %s", self.symbol, blocked)
+            elif signal["signal"] == 1 and position <= 0:
                 qty = self._buy_quantity(price)
                 if qty > 0:
                     order = self.broker.submit_order(self.symbol, "BUY", qty, price)
@@ -140,6 +148,8 @@ class TradingEngine:
             signal["crossover"] = signal["action"]
             signal["action"] = order.side if order else "HOLD"
             signal["order"] = order.to_dict() if order else None
+            signal["data_source"] = info.source
+            signal["orders_blocked"] = blocked
             signal["evaluated_at"] = _now()
 
             self.last_signal = signal
@@ -159,6 +169,17 @@ class TradingEngine:
             raise
         finally:
             self._cycle_lock.release()
+
+    def _data_status(self) -> dict | None:
+        """Provenienza ed età degli ultimi dati usati, per /api/status."""
+        info = self.fetcher.last_info
+        if info is None:
+            return None
+        out = info.to_dict()
+        age = bar_age(info.last_bar)
+        out["age_seconds"] = round(age.total_seconds()) if age is not None else None
+        out["orders_blocked"] = order_block_reason(info)
+        return out
 
     def _buy_quantity(self, price: float) -> float:
         """

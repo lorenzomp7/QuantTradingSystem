@@ -13,6 +13,7 @@ Avvia un server FastAPI che espone:
     GET  /api/signals         -> storico dei segnali generati
     GET  /api/backtest        -> backtest della strategia con parametri custom
     GET  /api/logs            -> ultimi log applicativi
+    GET  /api/data-health     -> provenienza ed età dei dati (503 se mock di ripiego o vecchi)
     GET  /docs                -> documentazione OpenAPI interattiva (Swagger)
 
 Gli endpoint "protetti" richiedono l'header `X-API-Key` se la variabile
@@ -31,7 +32,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from config import settings
 from core.engine import TradingEngine
@@ -171,6 +172,35 @@ async def run_backtest(
         return await asyncio.to_thread(_job)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/data-health", tags=["system"])
+async def data_health() -> JSONResponse:
+    """
+    Da dove arrivano i dati del bot e quanto sono recenti.
+
+    Risponde 503 quando il bot non invierebbe ordini: serie mock al posto di
+    Yahoo, nessun dato o ultima candela troppo vecchia. Il controllo dopo il
+    deploy può quindi usare `curl -f`.
+    """
+    from utils.data_fetcher import bar_age, max_bar_age, order_block_reason
+
+    def _job() -> dict:
+        _, info = engine.fetcher.get_ohlcv_with_info(
+            settings.symbol, settings.data_period, settings.data_interval
+        )
+        age = bar_age(info.last_bar)
+        blocked = order_block_reason(info)
+        return {
+            **info.to_dict(),
+            "age_seconds": round(age.total_seconds()) if age is not None else None,
+            "max_age_seconds": round(max_bar_age(info.interval).total_seconds()),
+            "orders_blocked": blocked,
+            "ok": blocked is None,
+        }
+
+    body = await asyncio.to_thread(_job)
+    return JSONResponse(body, status_code=200 if body["ok"] else 503)
 
 
 @app.get("/api/logs", tags=["system"])
