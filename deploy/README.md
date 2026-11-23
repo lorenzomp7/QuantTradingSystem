@@ -1,8 +1,7 @@
 # Backend sulla VM Oracle Cloud (Always Free)
 
 La parte statica del progetto è su **GitHub Pages**; il server gira su una VM Oracle Cloud
-*Always Free*, condivisa con gli altri progetti (BoatRadar, DressIt, OpenVitals.io,
-QuantTradingSystem). Costo: **0 €/mese** entro i limiti Always Free (Ampere A1: 2 OCPU e
+*Always Free*, condivisa con gli altri progetti (BoatRadar, DressIt, QuantTradingSystem). Costo: **0 €/mese** entro i limiti Always Free (Ampere A1: 2 OCPU e
 12 GB di RAM in totale, 200 GB di disco, 10 TB/mese di traffico in uscita).
 
 ## Una volta sola: crea la VM
