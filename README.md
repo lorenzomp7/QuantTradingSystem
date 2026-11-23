@@ -33,7 +33,8 @@ QuantTradingSystem/
 │   └── logger.py            # Logging su stdout + buffer in memoria per /api/logs
 ├── execution/
 │   ├── __init__.py
-│   └── broker.py            # PaperBroker + placeholder Alpaca / ccxt
+│   ├── broker.py            # PaperBroker + placeholder Alpaca / ccxt, stati dell'ordine
+│   └── reconcile.py         # Ricalcolo indipendente del registro del PaperBroker
 ├── templates/
 │   └── dashboard.html       # Dashboard web (stato, controlli, backtest, log)
 ├── tests/
@@ -58,7 +59,8 @@ QuantTradingSystem/
 | `utils/data_fetcher.py` | `MarketDataFetcher` con cache TTL; Yahoo Finance via `yfinance`, fallback su serie GBM deterministica, sempre dichiarato (`DataInfo`) |
 | `utils/data_health.py` | `python -m utils.data_health`: prova BTC-USD e SPY su Yahoo senza ripiego, esce con 1 se una fonte non risponde o è vecchia |
 | `core/engine.py` | `TradingEngine`: ciclo periodico asincrono che allinea la posizione al segnale |
-| `execution/broker.py` | `PaperBroker` in memoria; `AlpacaBroker` e `CcxtBroker` pronti da completare |
+| `execution/broker.py` | `PaperBroker` in memoria; `AlpacaBroker` e `CcxtBroker` pronti da completare. Stati dell'ordine (`new`, `open`, `partially_filled`, `filled`, `canceled`, `rejected`, `pending_cancel`); un ordine senza liquidità resta nel registro come `rejected` |
+| `execution/reconcile.py` | `reconcile_broker(broker)`: rifà cassa, posizioni, costo medio e NAV in `Decimal` dagli ordini e segnala ogni campo del conto che non torna |
 
 ### La strategia in breve
 

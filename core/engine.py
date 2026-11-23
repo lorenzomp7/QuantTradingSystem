@@ -17,7 +17,7 @@ from collections import deque
 from datetime import datetime, timezone
 
 from config import Settings
-from execution.broker import BaseBroker, PaperBroker, create_broker
+from execution.broker import STATUS_FILLED, BaseBroker, OrderRejected, PaperBroker, create_broker
 from strategy.quant_model import BaseStrategy, MovingAverageCrossover, StrategyParams
 from utils.data_fetcher import MarketDataFetcher, bar_age, order_block_reason
 from utils.logger import get_logger
@@ -138,7 +138,10 @@ class TradingEngine:
             elif signal["signal"] == 1 and position <= 0:
                 qty = self._buy_quantity(price)
                 if qty > 0:
-                    order = self.broker.submit_order(self.symbol, "BUY", qty, price)
+                    try:
+                        order = self.broker.submit_order(self.symbol, "BUY", qty, price)
+                    except OrderRejected as exc:
+                        order = exc.order  # registrato con stato "rejected"
                 else:
                     logger.warning("Liquidità insufficiente per comprare %s @ %.2f", self.symbol, price)
             elif signal["signal"] == 0 and position > 0:
@@ -146,7 +149,7 @@ class TradingEngine:
 
             # `crossover` = evento sull'ultima barra; `action` = ciò che il bot ha fatto davvero.
             signal["crossover"] = signal["action"]
-            signal["action"] = order.side if order else "HOLD"
+            signal["action"] = order.side if order and order.status == STATUS_FILLED else "HOLD"
             signal["order"] = order.to_dict() if order else None
             signal["data_source"] = info.source
             signal["orders_blocked"] = blocked

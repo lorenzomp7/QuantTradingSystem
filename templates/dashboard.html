@@ -95,11 +95,14 @@ async function refresh() {
       Candele: `${s.data_interval} (storico ${s.data_period})`,
       "Intervallo loop": s.loop_interval_seconds + "s", Cicli: s.cycles,
       "Ultimo run": s.last_run_at, "Ultimo segnale": sig.action ? `${sig.action} @ ${sig.close}` : null,
+      "Ordini sospesi": (s.data && s.data.orders_blocked) || null,
       Errore: s.last_error,
     });
     const a = s.account || {};
     $("account").innerHTML = kv({ Broker: a.broker, Cash: a.cash, "Valore posizioni": a.market_value,
-      Equity: a.equity, "P&L": a.pnl, Posizioni: a.positions, Ordini: (a.orders || []).length });
+      Equity: a.equity, "P&L": a.pnl, Posizioni: a.positions,
+      Ordini: (a.orders || []).filter(o => o.status === "filled").length,
+      Rifiutati: (a.orders || []).filter(o => o.status === "rejected").length || null });
 
     const logs = await (await fetch("/api/logs?limit=100")).json();
     $("logs").textContent = logs.reverse().map(l => `${l.timestamp.slice(0,19)} ${l.level.padEnd(7)} ${l.message}`).join("\n") || "Nessun log";

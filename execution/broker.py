@@ -24,6 +24,23 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Stati dell'ordine, dall'elenco di Vibe-Trading (agent/src/tools/paper_trade/
+# order_lifecycle.py, MIT), che usa i nomi di JoinQuant. Lì "filled" vuol dire
+# eseguito in parte e "held" eseguito per intero: qui si tengono i nomi
+# dell'uso comune, quindi "partially_filled" e "filled".
+STATUS_NEW = "new"
+STATUS_OPEN = "open"
+STATUS_PARTIALLY_FILLED = "partially_filled"
+STATUS_FILLED = "filled"
+STATUS_CANCELED = "canceled"
+STATUS_REJECTED = "rejected"
+STATUS_PENDING_CANCEL = "pending_cancel"
+ORDER_STATUSES = (
+    STATUS_NEW, STATUS_OPEN, STATUS_PARTIALLY_FILLED, STATUS_FILLED,
+    STATUS_CANCELED, STATUS_REJECTED, STATUS_PENDING_CANCEL,
+)
+TERMINAL_STATUSES = frozenset({STATUS_FILLED, STATUS_CANCELED, STATUS_REJECTED})
+
 
 @dataclass
 class Order:
@@ -32,11 +49,24 @@ class Order:
     quantity: float
     price: float
     id: str = field(default_factory=lambda: uuid4().hex[:12])
-    status: str = "filled"
+    status: str = STATUS_FILLED
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    reason: str | None = None   # motivo del rifiuto o dell'annullamento
+
+    def __post_init__(self) -> None:
+        if self.status not in ORDER_STATUSES:
+            raise ValueError(f"Stato ordine non valido: {self.status!r} (attesi: {ORDER_STATUSES})")
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+class OrderRejected(ValueError):
+    """Ordine rifiutato dal broker. L'ordine (stato `rejected`) è in `.order`."""
+
+    def __init__(self, order: Order) -> None:
+        super().__init__(order.reason or "Ordine rifiutato")
+        self.order = order
 
 
 class BaseBroker(ABC):
@@ -84,7 +114,14 @@ class PaperBroker(BaseBroker):
             fee = notional * self.fee_bps / 10_000
             if side == "BUY":
                 if notional + fee > self.cash:
-                    raise ValueError("Liquidità insufficiente")
+                    rejected = Order(
+                        symbol=symbol, side=side, quantity=quantity, price=price,
+                        status=STATUS_REJECTED,
+                        reason=f"Liquidità insufficiente: servono {notional + fee:.2f}, disponibili {self.cash:.2f}",
+                    )
+                    self.orders.append(rejected)
+                    logger.warning("[PAPER] ordine rifiutato: %s", rejected.reason)
+                    raise OrderRejected(rejected)
                 self.cash -= notional + fee
                 self.positions[symbol] = held + quantity
             else:
