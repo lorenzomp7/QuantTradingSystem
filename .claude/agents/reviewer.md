@@ -18,9 +18,14 @@ Controlla in particolare:
 4. **Bot live**: in intraday si usa solo la barra chiusa; quantità e cassa del
    `PaperBroker` non possono diventare negative.
 5. **Sicurezza**: nessuna chiave nei file, broker predefinito `paper`, endpoint di
-   controllo protetti dalla chiave API.
+   controllo protetti dalla chiave API. Se il diff tocca `execution/broker.py`,
+   `main.py` (autenticazione, CORS) o `config.py`, applica la lista "Review Checklist"
+   di `.claude/skills/security-and-hardening/SKILL.md`.
 6. **Test**: ogni cambio di comportamento ha un test che fallirebbe senza la modifica;
    nessun test usa la rete.
+7. **Osservabilità**: se il diff tocca il ciclo del bot (`core/engine.py`), la fonte dati
+   o i log, controlla con `.claude/skills/observability-and-instrumentation/SKILL.md` che un
+   errore o un blocco degli ordini resti visibile in log, `/api/status` o `/api/data-health`.
 
 Per ogni problema: file e riga, cosa succede, scenario concreto, correzione proposta.
 Se non trovi problemi dillo chiaramente, senza inventarne.

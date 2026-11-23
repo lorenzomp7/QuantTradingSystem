@@ -39,3 +39,11 @@ comandi davvero eseguiti e i loro esiti.
 - I test non devono usare la rete: usa i dati mock.
 - Per confrontare il backtest con librerie esterne (backtesting.py, Backtrader)
   usa stessi dati, commissioni e regole di esecuzione, e riporta le differenze.
+
+## Procedure per gli agenti (`.claude/skills/`)
+
+- **Sicurezza** (`security-and-hardening`): leggila prima di toccare `execution/broker.py`
+  (ordini, broker reali, chiavi API), l'autenticazione `X-API-Key`, CORS o `config.py`.
+- **Osservabilità** (`observability-and-instrumentation`): per log, metriche e avvisi del bot
+  (punti 23 e 31 del Piano) e ogni volta che un errore del ciclo o un blocco degli ordini
+  potrebbe passare inosservato: il bot gira da solo, senza i log di una piattaforma gestita.
