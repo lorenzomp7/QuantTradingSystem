@@ -99,3 +99,29 @@ def test_mock_intraday_bars():
     df = generate_mock_ohlcv("BTC-USD", period="5d", interval="5m")
     assert len(df) == 5 * 288
     assert (df.index.to_series().diff().dropna() == pd.Timedelta(minutes=5)).all()
+
+
+@pytest.mark.parametrize("tz", ["America/New_York", "Asia/Tokyo", "UTC"])
+def test_mock_ends_now_in_utc_whatever_the_local_timezone(monkeypatch, tz):
+    # La serie mock si confronta con l'ora UTC (età dei dati): deve finire adesso in UTC.
+    import time
+
+    from utils.data_fetcher import utc_now
+
+    monkeypatch.setenv("TZ", tz)
+    time.tzset()
+    try:
+        df = generate_mock_ohlcv("BTC-USD", period="5d", interval="5m")
+        age = utc_now() - df.index[-1]
+        assert pd.Timedelta(0) <= age <= pd.Timedelta(minutes=10)
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
+def test_mock_daily_calendar_follows_market():
+    btc = generate_mock_ohlcv("BTC-USD", period="2y", interval="1d")
+    spy = generate_mock_ohlcv("SPY", period="2y", interval="1d")
+    assert (btc.index.to_series().diff().dropna() == pd.Timedelta(days=1)).all()   # 24/7
+    assert len(btc) == 730 and len(spy) == 504
+    assert spy.index.dayofweek.max() <= 4                                          # giorni feriali

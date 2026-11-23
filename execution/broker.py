@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import threading
 from abc import ABC, abstractmethod
+from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -93,7 +94,9 @@ class PaperBroker(BaseBroker):
         self.fee_bps = fee_bps
         self.positions: dict[str, float] = {}
         self.last_prices: dict[str, float] = {}
-        self.orders: list[Order] = []
+        self.orders: list[Order] = []                      # ordini eseguiti (il registro)
+        self.rejected_orders: deque[Order] = deque(maxlen=50)   # ultimi rifiutati, non nel registro
+        self.rejected_count = 0
         self._lock = threading.Lock()
 
     def submit_order(self, symbol: str, side: str, quantity: float, price: float) -> Order:
@@ -119,7 +122,8 @@ class PaperBroker(BaseBroker):
                         status=STATUS_REJECTED,
                         reason=f"Liquidità insufficiente: servono {notional + fee:.2f}, disponibili {self.cash:.2f}",
                     )
-                    self.orders.append(rejected)
+                    self.rejected_orders.append(rejected)
+                    self.rejected_count += 1
                     logger.warning("[PAPER] ordine rifiutato: %s", rejected.reason)
                     raise OrderRejected(rejected)
                 self.cash -= notional + fee
@@ -154,6 +158,8 @@ class PaperBroker(BaseBroker):
                 "pnl": round(equity - self.initial_cash, 2),
                 "positions": {s: q for s, q in self.positions.items() if q},
                 "orders": [o.to_dict() for o in self.orders[-50:]],
+                "rejected_orders": [o.to_dict() for o in list(self.rejected_orders)[-10:]],
+                "order_counts": {"filled": len(self.orders), "rejected": self.rejected_count},
             }
 
 

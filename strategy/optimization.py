@@ -95,7 +95,7 @@ def genetic_search(
     è il miglior punteggio dopo ogni generazione (non scende, grazie all'elitismo).
     """
     _score({"sharpe_ratio": 0.0, "total_return_pct": 0.0}, objective)
-    if population < 4 or generations < 1 or not 0 <= mutation_rate <= 1 or not 0 <= elite < population:
+    if population < 4 or generations < 1 or not 0 <= mutation_rate <= 1 or not 1 <= elite < population:
         raise ValueError("Parametri dell'algoritmo genetico non validi.")
     names = list(space)
     types = {f.name: f.type for f in fields(base_params)}

@@ -105,8 +105,8 @@ async function refresh() {
     const a = s.account || {};
     $("account").innerHTML = kv({ Broker: a.broker, Cash: a.cash, "Valore posizioni": a.market_value,
       Equity: a.equity, "P&L": a.pnl, Posizioni: a.positions,
-      Ordini: (a.orders || []).filter(o => o.status === "filled").length,
-      Rifiutati: (a.orders || []).filter(o => o.status === "rejected").length || null });
+      Ordini: (a.order_counts || {}).filled ?? (a.orders || []).length,
+      Rifiutati: (a.order_counts || {}).rejected || null });
 
     const logs = await (await fetch("/api/logs?limit=100")).json();
     $("logs").textContent = logs.reverse().map(l => `${l.timestamp.slice(0,19)} ${l.level.padEnd(7)} ${l.message}`).join("\n") || "Nessun log";

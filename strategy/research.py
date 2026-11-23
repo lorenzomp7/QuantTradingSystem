@@ -86,10 +86,11 @@ def cost_sensitivity(
 # ======================================================= Finestre
 @dataclass
 class WindowResult:
-    returns: pd.Series      # rendimento della strategia per barra della finestra
-    positions: pd.Series    # posizione detenuta per barra (0 alla prima barra)
-    turnover: pd.Series     # cambi di posizione, compresa la liquidazione finale
+    returns: pd.Series        # rendimento della strategia per barra della finestra
+    positions: pd.Series      # posizione detenuta per barra (0 alla prima barra)
+    turnover: pd.Series       # cambi di posizione, compresa la liquidazione finale
     close: pd.Series
+    asset_returns: pd.Series  # rendimento dell'asset per barra (0 alla prima)
 
 
 def window_returns(strategy: BaseStrategy, data: pd.DataFrame, start: int, stop: int) -> WindowResult:
@@ -113,7 +114,24 @@ def window_returns(strategy: BaseStrategy, data: pd.DataFrame, start: int, stop:
     turnover.iloc[-1] += abs(held.iloc[-1])           # liquidazione a fine finestra
     fee = strategy.params.fee_bps / 10_000
     returns = held * asset_ret - turnover * fee
-    return WindowResult(returns=returns, positions=held, turnover=turnover, close=close)
+    return WindowResult(returns=returns, positions=held, turnover=turnover, close=close, asset_returns=asset_ret)
+
+
+def _window_trades(w: WindowResult) -> pd.DataFrame:
+    """
+    Trade della finestra con le stesse convenzioni del backtest principale.
+
+    La posizione detenuta cambia sulla barra dopo il segnale, quindi il prezzo
+    è il close della barra del segnale (barra precedente). La liquidazione di
+    fine finestra avviene al close dell'ultima barra.
+    """
+    change = w.positions.diff().fillna(w.positions)
+    price = w.close.shift(1)
+    rows = [(ts, "BUY" if c > 0 else "SELL", price.loc[ts]) for ts, c in change[change != 0].items()]
+    if w.positions.iloc[-1] > 0:
+        rows.append((w.close.index[-1], "SELL", w.close.iloc[-1]))
+    idx = pd.DatetimeIndex([r[0] for r in rows], name=w.close.index.name)
+    return pd.DataFrame({"side": [r[1] for r in rows], "price": [r[2] for r in rows]}, index=idx)
 
 
 def _window_metrics(strategy: BaseStrategy, data: pd.DataFrame, start: int, stop: int,
@@ -121,15 +139,12 @@ def _window_metrics(strategy: BaseStrategy, data: pd.DataFrame, start: int, stop
     w = window_returns(strategy, data, start, stop)
     p = strategy.params
     equity = p.initial_capital * (1 + w.returns).cumprod()
-    change = w.positions.diff().fillna(w.positions)
-    change.iloc[-1] -= w.positions.iloc[-1]          # la liquidazione finale è una vendita
-    trades = pd.DataFrame({"side": np.where(change > 0, "BUY", "SELL"), "price": w.close})[change != 0]
     m = compute_metrics(
-        strategy_returns=w.returns, asset_returns=w.close.pct_change().fillna(0.0), equity=equity,
-        trades=trades, initial_capital=p.initial_capital, risk_free_rate=p.risk_free_rate,
+        strategy_returns=w.returns, asset_returns=w.asset_returns, equity=equity,
+        trades=_window_trades(w), initial_capital=p.initial_capital, risk_free_rate=p.risk_free_rate,
         bars_per_year=bars_per_year,
     )
-    return m, w.returns
+    return m, w
 
 
 # ===================================================== Walk-forward
@@ -177,7 +192,7 @@ def walk_forward(
     key = _OBJECTIVES[objective]
     idx = data.index
 
-    def fit_and_test(boundary: int, end: int) -> tuple[dict, pd.Series]:
+    def fit_and_test(boundary: int, end: int) -> tuple[dict, WindowResult]:
         start = 0 if training == "expanding" else boundary - train_bars
         results = []
         for c in candidates:
@@ -189,25 +204,27 @@ def walk_forward(
                             "metrics": {k: m[k] for k in ("total_return_pct", "sharpe_ratio",
                                                           "max_drawdown_pct", "num_trades")}})
         chosen = max(results, key=lambda r: r["score"])["parameters"]  # il primo vince a parità
-        test_m, test_ret = _window_metrics(strategy_cls(replace(base, **chosen)), data, boundary, end, bars_per_year)
+        test_m, test_w = _window_metrics(strategy_cls(replace(base, **chosen)), data, boundary, end, bars_per_year)
         return {
             "training_start": str(idx[start]), "training_end": str(idx[boundary - 1]),
             "test_start": str(idx[boundary]), "test_end": str(idx[end - 1]),
             "training": results, "chosen": chosen,
             "test": {k: test_m[k] for k in ("total_return_pct", "cagr_pct", "sharpe_ratio",
                                             "max_drawdown_pct", "num_trades", "buy_and_hold_return_pct")},
-        }, test_ret
+        }, test_w
 
-    folds, oos = [], []
+    folds, oos, oos_asset = [], [], []
     for number, boundary in enumerate(boundaries, 1):
-        fold, ret = fit_and_test(boundary, boundary + test_bars)
+        fold, w = fit_and_test(boundary, boundary + test_bars)
         folds.append({"fold": number, **fold})
-        oos.append(ret)
+        oos.append(w.returns)
+        oos_asset.append(w.asset_returns)
     holdout = fit_and_test(limit, n)[0] if holdout_bars else None
 
+    # Buy & Hold sulle stesse finestre di test, concatenate come la strategia.
     combined = pd.concat(oos)
     equity = base.initial_capital * (1 + combined).cumprod()
-    oos_m = compute_metrics(combined, combined * 0, equity, pd.DataFrame(columns=["side", "price"]),
+    oos_m = compute_metrics(combined, pd.concat(oos_asset), equity, pd.DataFrame(columns=["side", "price"]),
                             base.initial_capital, base.risk_free_rate, bars_per_year=bars_per_year)
     return {
         "mode": "locked" if holdout_bars else "strict",
@@ -215,6 +232,7 @@ def walk_forward(
         "training": training,
         "base_params": asdict(base),
         "folds": folds,
-        "oos": {k: oos_m[k] for k in ("bars", "total_return_pct", "cagr_pct", "sharpe_ratio", "max_drawdown_pct")},
+        "oos": {k: oos_m[k] for k in ("bars", "total_return_pct", "cagr_pct", "sharpe_ratio", "max_drawdown_pct",
+                                      "buy_and_hold_return_pct")},
         "holdout": holdout,
     }

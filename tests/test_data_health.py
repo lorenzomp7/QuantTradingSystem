@@ -147,3 +147,15 @@ def test_api_data_health_ok_with_mock_source():
         r = client.get("/api/data-health")
         assert r.status_code == 200
         assert r.json()["source"] == "mock" and r.json()["ok"] is True
+
+
+def test_status_keeps_bot_block_after_a_backtest(monkeypatch):
+    # Il backtest della dashboard usa lo stesso fetcher (1d): non deve nascondere il blocco del bot.
+    monkeypatch.setattr(df_mod, "fetch_yahoo", _yahoo_down)
+    eng = _engine("yahoo")
+    eng.run_cycle()
+    assert eng.status()["data"]["orders_blocked"]
+    monkeypatch.setattr(df_mod, "fetch_yahoo", lambda *a, **k: generate_mock_ohlcv("SPY", "2y", "1d"))
+    eng.fetcher.get_ohlcv("SPY", "2y", "1d")          # come /api/backtest
+    status = eng.status()["data"]
+    assert status["symbol"] == "BTC-USD" and status["orders_blocked"]

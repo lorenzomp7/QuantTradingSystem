@@ -13,8 +13,8 @@
 # Variabili: PORT (10123), API_KEY (smoke-key), OUT_DIR (/tmp/qts-smoke),
 # ALLOW_NO_CHARTJS=1 per non fallire se Chart.js non arriva dal CDN (rete chiusa),
 # oppure CHARTJS_FILE=…/chart.umd.js per servirlo da un file locale (npm i chart.js@4.4.1).
-# Con BASE_URL lo script non avvia il server e non può fermare il bot di qualcun altro:
-# Avvia/Ferma si provano solo se API_KEY è impostata.
+# Con BASE_URL lo script non avvia il server; Avvia/Ferma si provano solo se API_KEY è
+# impostata e lo stato del bot resta quello iniziale: se era già acceso non lo ferma.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -132,16 +132,22 @@ m="$(msg_after_click "Avvia")"
 [[ "$m" == *"401"* ]] || fail "Avvia senza chiave doveva dare 401, ha dato: '$m'"
 ok "Avvia senza chiave: $m"
 
+bot_running() { curl -fs "$BASE_URL/health" | python3 -c 'import json,sys; print(json.load(sys.stdin)["bot_running"])'; }
+
 if [[ -n "$API_KEY" ]]; then
+  was_running="$(bot_running)"
   ab fill '#apikey' "$API_KEY" >/dev/null
   m="$(msg_after_click "Avvia")"
   [[ "$m" == *"avviato"* || "$m" == *"già in esecuzione"* ]] || fail "Avvia con chiave: '$m'"
   ok "Avvia con chiave: $m"
-  [[ "$(curl -fs "$BASE_URL/health" | python3 -c 'import json,sys; print(json.load(sys.stdin)["bot_running"])')" == True ]] \
-    || fail "dopo Avvia /health dice che il bot è fermo"
-  m="$(msg_after_click "Ferma")"
-  [[ "$m" == *"fermato"* ]] || fail "Ferma con chiave: '$m'"
-  ok "Ferma con chiave: $m"
+  [[ "$(bot_running)" == True ]] || fail "dopo Avvia /health dice che il bot è fermo"
+  if [[ "$was_running" == True ]]; then
+    echo "! il bot era già acceso: Ferma non provato, per non fermarlo"
+  else
+    m="$(msg_after_click "Ferma")"
+    [[ "$m" == *"fermato"* ]] || fail "Ferma con chiave: '$m'"
+    ok "Ferma con chiave: $m (bot di nuovo fermo come all'inizio)"
+  fi
 else
   echo "! API_KEY non impostata: Avvia/Ferma con chiave non provati"
 fi

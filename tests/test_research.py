@@ -120,3 +120,28 @@ def test_costs_endpoint():
         body = r.json()
         assert len(body["rows"]) == 6
         assert body["rows"][0]["bars_per_year"] == 252
+
+
+def test_window_trade_prices_use_signal_bar_close(data):
+    from strategy.research import _window_trades
+
+    strat = MovingAverageCrossover(StrategyParams(short_window=5, long_window=20))
+    w = window_returns(strat, data, 300, 400)
+    trades = _window_trades(w)
+    change = w.positions.diff().fillna(w.positions)
+    first = change[change != 0].index[0]
+    i = w.close.index.get_loc(first)
+    # La posizione cambia sulla barra dopo il segnale: il prezzo è il close della barra del segnale.
+    assert trades.loc[first, "price"] == w.close.iloc[i - 1]
+    if w.positions.iloc[-1] > 0:
+        assert trades.iloc[-1]["side"] == "SELL" and trades.iloc[-1]["price"] == w.close.iloc[-1]
+
+
+def test_walk_forward_oos_has_buy_and_hold(data):
+    out = walk_forward(MovingAverageCrossover, data, CANDIDATES[:2], train_bars=400, test_bars=150,
+                       max_folds=2, base_params=StrategyParams(), bars_per_year=252)
+    closes = [data["close"].iloc[400:550], data["close"].iloc[550:700]]
+    expected = 1.0
+    for c in closes:
+        expected *= c.iloc[-1] / c.iloc[0]
+    assert out["oos"]["buy_and_hold_return_pct"] == pytest.approx((expected - 1) * 100, abs=0.01)

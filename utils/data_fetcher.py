@@ -149,7 +149,7 @@ class MarketDataFetcher:
                 used = "yahoo"
             except Exception as exc:  # rete assente, rate limit, ticker errato...
                 logger.warning("Yahoo Finance non disponibile (%s): uso dati mock.", exc)
-                warnings.append(f"Yahoo non disponibile ({type(exc).__name__}: {exc}): serie mock")
+                warnings.append(f"Yahoo non disponibile ({type(exc).__name__}: {str(exc)[:200]}): serie mock")
                 df = generate_mock_ohlcv(symbol, period, interval)
                 used = "mock"
         else:
@@ -216,6 +216,10 @@ def generate_mock_ohlcv(
     days = _PERIOD_TO_DAYS.get(period, 504)
     freq = _INTERVAL_TO_FREQ.get(interval, "B")
     minutes = _INTERVAL_MINUTES.get(interval)
+    if interval == "1d" and _is_crypto(symbol):
+        # Crypto giornaliera: aperta 24/7, 365 barre l'anno come nelle metriche.
+        freq = "D"
+        days = round(days * 365 / 252)
     # Intraday: barre continue 24/7 (come le crypto); giornaliero: 1 barra al giorno.
     bars_per_day = (24 * 60) // minutes if minutes else 1
     n = min(days * bars_per_day, _MAX_MOCK_BARS)
@@ -237,7 +241,9 @@ def generate_mock_ohlcv(
     low = np.minimum(open_, close) * (1 - intrabar)
     volume = rng.integers(1_000_000, 10_000_000, n).astype(float)
 
-    end = pd.Timestamp.now().floor(freq) if minutes else pd.Timestamp.now().normalize()
+    # Fine della serie in UTC senza fuso, come i dati Yahoo normalizzati: l'età
+    # dell'ultima candela si misura con utc_now() qualunque sia il fuso della macchina.
+    end = utc_now().floor(freq) if minutes else utc_now().normalize()
     index = pd.date_range(end=end, periods=n, freq=freq, name="date")
 
     return pd.DataFrame(
@@ -300,6 +306,12 @@ def order_block_reason(info: DataInfo, now: pd.Timestamp | None = None) -> str |
     if age is not None and age > limit:
         return f"dati vecchi (ultima candela {info.last_bar}, età {age}, limite {limit}): nessun ordine"
     return None
+
+
+def _is_crypto(symbol: str) -> bool:
+    from strategy.metrics import infer_market  # import locale: evita dipendenze circolari
+
+    return infer_market(symbol) == "crypto"
 
 
 # ------------------------------------------------------------- Utilities

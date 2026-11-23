@@ -39,7 +39,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from strategy.metrics import bars_per_year, infer_market  # noqa: E402
+from strategy.metrics import bars_per_year  # noqa: E402
 from strategy.quant_model import MovingAverageCrossover, StrategyParams  # noqa: E402
 from utils.data_fetcher import generate_mock_ohlcv  # noqa: E402
 
@@ -228,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"Dati: mock {args.symbol} {args.period} ({len(data)} barre, open = close precedente), "
               f"SMA {args.short}/{args.long}, fee {args.fee_bps} bps, capitale {args.capital:g}, "
-              f"mercato {infer_market(args.symbol)}")
+              f"serie giornaliera 24/7 (365 barre/anno, motore crypto di Vibe-Trading)")
         print(format_table(rows, vibe.engine))
         print(f"Artefatti di Vibe-Trading: {run / 'artifacts'}")
     return 0 if all(r["ok"] for r in rows) else 1

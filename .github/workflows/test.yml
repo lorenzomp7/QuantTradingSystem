@@ -45,7 +45,7 @@ jobs:
         with:
           node-version: "22"
       - run: python -m pip install -r requirements-dev.txt
-      - run: npm i -g agent-browser && agent-browser install --with-deps
+      - run: npm i -g agent-browser@0.44.0 && agent-browser install --with-deps
       - run: bash tools/smoke_dashboard.sh
         env:
           OUT_DIR: ${{ runner.temp }}/qts-smoke

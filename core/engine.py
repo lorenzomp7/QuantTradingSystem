@@ -61,6 +61,8 @@ class TradingEngine:
         self.last_error: str | None = None
         self.cycles = 0
         self.last_signal: dict | None = None
+        self.last_data_info = None   # DataInfo dell'ultimo ciclo (non dei backtest)
+        self._last_rejection: tuple | None = None   # (lato, quantità, cassa) dell'ultimo rifiuto
         self.signal_history: deque[dict] = deque(maxlen=200)
 
     # ------------------------------------------------------------ Stato
@@ -118,6 +120,7 @@ class TradingEngine:
             # Dati di ripiego (mock al posto di Yahoo) o vecchi: si calcola il
             # segnale ma non si inviano ordini (punto 1 del Piano).
             blocked = order_block_reason(info)
+            self.last_data_info = info
 
             # Con candele intraday l'ultima barra è ancora "in formazione": il
             # segnale si calcola solo sulle candele chiuse, per non far
@@ -137,11 +140,17 @@ class TradingEngine:
                 logger.warning("Ordini sospesi su %s: %s", self.symbol, blocked)
             elif signal["signal"] == 1 and position <= 0:
                 qty = self._buy_quantity(price)
-                if qty > 0:
+                key = ("BUY", qty, self._cash())
+                if qty > 0 and key == self._last_rejection:
+                    # Stesso ordine già rifiutato con la stessa cassa: non ripeterlo a ogni ciclo.
+                    pass
+                elif qty > 0:
                     try:
                         order = self.broker.submit_order(self.symbol, "BUY", qty, price)
+                        self._last_rejection = None
                     except OrderRejected as exc:
-                        order = exc.order  # registrato con stato "rejected"
+                        order = exc.order  # tenuto dal broker tra i rifiutati
+                        self._last_rejection = key
                 else:
                     logger.warning("Liquidità insufficiente per comprare %s @ %.2f", self.symbol, price)
             elif signal["signal"] == 0 and position > 0:
@@ -174,8 +183,13 @@ class TradingEngine:
             self._cycle_lock.release()
 
     def _data_status(self) -> dict | None:
-        """Provenienza ed età degli ultimi dati usati, per /api/status."""
-        info = self.fetcher.last_info
+        """
+        Provenienza ed età dei dati dell'ultimo ciclo del bot, per /api/status.
+
+        Non si usa `fetcher.last_info`: lo stesso fetcher serve anche i backtest
+        della dashboard (altro simbolo e intervallo), che lo sovrascriverebbero.
+        """
+        info = self.last_data_info
         if info is None:
             return None
         out = info.to_dict()
@@ -183,6 +197,12 @@ class TradingEngine:
         out["age_seconds"] = round(age.total_seconds()) if age is not None else None
         out["orders_blocked"] = order_block_reason(info)
         return out
+
+    def _cash(self) -> float | None:
+        try:
+            return float(self.broker.get_account()["cash"])
+        except (NotImplementedError, KeyError):
+            return None
 
     def _buy_quantity(self, price: float) -> float:
         """

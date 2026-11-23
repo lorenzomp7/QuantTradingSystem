@@ -106,7 +106,8 @@ def test_insufficient_cash_records_rejected_order():
     assert isinstance(info.value, ValueError)  # compatibile con chi intercetta ValueError
     rejected = info.value.order
     assert rejected.status == STATUS_REJECTED and "Liquidità" in rejected.reason
-    assert broker.orders == [rejected]
+    assert broker.orders == [] and list(broker.rejected_orders) == [rejected]
+    assert broker.get_account()["order_counts"] == {"filled": 0, "rejected": 1}
     assert broker.cash == 100 and broker.get_position("X") == 0
     assert reconcile_broker(broker).ok  # gli ordini rifiutati non muovono il registro
 
@@ -127,3 +128,30 @@ def test_engine_reports_rejected_order_as_hold(monkeypatch):
     assert sig["action"] == "HOLD"
     assert sig["order"]["status"] == STATUS_REJECTED
     assert eng.last_error is None
+
+
+def test_rejected_orders_are_bounded_and_counted():
+    broker = PaperBroker(initial_cash=100, fee_bps=0)
+    broker.submit_order("X", "BUY", 1, 50)
+    for _ in range(300):
+        with pytest.raises(OrderRejected):
+            broker.submit_order("X", "BUY", 10, 50)
+    acct = broker.get_account()
+    assert acct["order_counts"] == {"filled": 1, "rejected": 300}
+    assert len(broker.rejected_orders) == broker.rejected_orders.maxlen
+    assert [o["status"] for o in acct["orders"]] == ["filled"]
+
+
+def test_engine_does_not_repeat_the_same_rejection(monkeypatch):
+    cfg = replace(Settings(), data_source="mock", trade_quantity=10_000.0)
+    eng = TradingEngine(cfg, fetcher=MarketDataFetcher(source="mock"),
+                        broker=PaperBroker(initial_cash=100, fee_bps=0))
+    monkeypatch.setattr(eng.strategy, "latest_signal",
+                        lambda data: {"timestamp": "t", "close": 1.0, "signal": 1, "action": "BUY"})
+    for _ in range(5):
+        eng.run_cycle()
+    assert eng.broker.get_account()["order_counts"]["rejected"] == 1
+    assert eng.last_signal["action"] == "HOLD"
+    eng.broker.cash = 1e12                       # la cassa cambia: si riprova
+    eng.run_cycle()
+    assert eng.broker.get_account()["order_counts"]["filled"] == 1

@@ -103,7 +103,10 @@ pytest -q                                              # test (dati mock, offlin
 Se Yahoo non risponde il fetcher usa la serie mock, ma lo dichiara: `/api/status`
 (campo `data`) e `/api/data-health` riportano fonte richiesta, fonte usata,
 ultima candela ed età. Con dati mock di ripiego o troppo vecchi il bot calcola
-il segnale ma **non invia ordini** (`orders_blocked` nel segnale).
+il segnale ma **non invia ordini** (`orders_blocked` nel segnale), nemmeno le vendite:
+con dati vecchi una posizione aperta resta aperta finché i dati tornano validi, perché
+un'uscita decisa su prezzi sbagliati non è più sicura di un'entrata. Un ordine rifiutato
+(liquidità insufficiente) non viene ripetuto finché la cassa non cambia.
 
 ```bash
 python -m utils.data_health                 # 0 = Yahoo sano, 1 = fonte bloccata o vecchia
@@ -112,14 +115,14 @@ curl -f https://<servizio>/api/data-health  # 503 quando il bot non invierebbe o
 
 ### Seconda strategia e ottimizzazione genetica
 
-Sugli stessi dati mock (2 anni, 10.000, 5 bps):
+Sugli stessi dati mock (2 anni: 504 sedute per SPY, 730 giorni 24/7 per BTC; 10.000; 5 bps):
 
 | Dati | Strategia | Rend. % | CAGR % | Sharpe | Max DD % | Trade | Buy & Hold % |
 |---|---|---:|---:|---:|---:|---:|---:|
 | SPY | SMA 20/50 | 0,69 | 0,34 | 0,09 | −14,65 | 9 | 1,08 |
 | SPY | RSI/MACD fuzzy | 5,03 | 2,49 | 0,24 | −19,11 | 16 | 1,08 |
-| BTC-USD | SMA 20/50 | 24,09 | 16,92 | 0,99 | −15,27 | 9 | 50,52 |
-| BTC-USD | RSI/MACD fuzzy | 33,50 | 23,27 | 1,24 | −10,48 | 17 | 50,52 |
+| BTC-USD | SMA 20/50 | 48,42 | 21,83 | 1,17 | −15,27 | 14 | 81,42 |
+| BTC-USD | RSI/MACD fuzzy | 38,54 | 17,70 | 0,99 | −14,01 | 27 | 81,42 |
 
 Sono dati sintetici: la tabella mostra che le due strategie funzionano con lo stesso
 backtest, non che una renda più dell'altra sul mercato vero. Sul mock SPY la griglia SMA
@@ -161,7 +164,7 @@ python tools/compare_external.py --vibe-python ~/.venvs/vibe/bin/python    # 0 =
 I dati del confronto hanno open(t) = close(t-1), così l'esecuzione al close della barra del
 segnale (QTS) e all'open della barra dopo (Vibe-Trading) avvengono allo stesso prezzo; la
 chiusura forzata di fine backtest di Vibe-Trading viene addebitata anche a QTS. Sul mock
-BTC-USD 2 anni (SMA 20/50, 5 bps) l'equity finale differisce dello 0,0005%, sul mock SPY
+BTC-USD 2 anni (SMA 20/50, 5 bps) l'equity finale differisce dello 0,0010%, sul mock SPY
 5 anni (SMA 10/30, 10 bps) dello 0,0033%, con gli stessi trade.
 
 ```python
