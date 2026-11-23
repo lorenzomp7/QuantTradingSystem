@@ -102,6 +102,19 @@ python -m utils.data_health                 # 0 = Yahoo sano, 1 = fonte bloccata
 curl -f https://<servizio>/api/data-health  # 503 quando il bot non invierebbe ordini
 ```
 
+### Prova della dashboard nel browser
+
+`tools/smoke_dashboard.sh` usa [agent-browser](https://github.com/vercel-labs/agent-browser)
+(Apache-2.0): avvia l'app con dati mock, apre la dashboard a 1280×800 e 390×844, controlla
+metriche, grafico e assenza di errori nella pagina, prova Avvia/Ferma senza chiave (401) e
+con chiave, salva gli screenshot. Con `BASE_URL=… API_KEY=…` prova una dashboard già online.
+In CI gira come job facoltativo `smoke-dashboard`.
+
+```bash
+npm i -g agent-browser && agent-browser install --with-deps
+bash tools/smoke_dashboard.sh          # 0 = tutto ok, 1 = primo controllo fallito
+```
+
 Le metriche del backtest sono annualizzate con il numero di barre l'anno del
 mercato e dell'intervallo (`bars_per_year` nelle metriche): 365 per BTC
 giornaliero, 252 per SPY, 365 × 288 per BTC a 5 minuti.

@@ -22,6 +22,7 @@ FastAPI, con deploy su Render. Lavora su `main_claude` salvo indicazione diversa
 | Avvio locale | `cp .env.example .env` poi `uvicorn main:app --reload --port 10000` |
 | Dati senza rete | `DATA_SOURCE=mock` |
 | Salute della fonte dati | `python -m utils.data_health` (usa la rete; esce con 1 se Yahoo non risponde) |
+| Prova della dashboard nel browser | `bash tools/smoke_dashboard.sh` (agent-browser; senza CDN: `ALLOW_NO_CHARTJS=1` o `CHARTJS_FILE=…/chart.umd.js`) |
 
 Esegui la verifica standard prima di dichiarare finito un cambio. Riporta i
 comandi davvero eseguiti e i loro esiti.
@@ -41,6 +42,11 @@ comandi davvero eseguiti e i loro esiti.
   usa stessi dati, commissioni e regole di esecuzione, e riporta le differenze.
 
 ## Procedure per gli agenti (`.claude/skills/`)
+
+- **Verifiche nel browser**: usa `agent-browser` (non il Chrome personale); prima esegui
+  `agent-browser skills get core` e usa una `--session` tua. Per la dashboard c'è già
+  `tools/smoke_dashboard.sh`: lancialo dopo ogni modifica a `templates/dashboard.html`
+  o alle API che la alimentano (punti 19, 20 e 26 del Piano).
 
 - **Sicurezza** (`security-and-hardening`): leggila prima di toccare `execution/broker.py`
   (ordini, broker reali, chiavi API), l'autenticazione `X-API-Key`, CORS o `config.py`.
