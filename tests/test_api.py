@@ -103,8 +103,15 @@ def test_dashboard_calls_go_through_the_api_address():
     html = (Path(main.__file__).parent / "templates" / "dashboard.html").read_text(encoding="utf-8")
     calls = re.findall(r"fetch\(\s*([^,)]+)", html)
     assert calls, "nessuna chiamata fetch trovata"
+    # L'unica eccezione è siteFile(): file del sito statico (stato del bot, moduli Python, snapshot).
     for arg in calls:
-        assert arg.strip().startswith(("API", "`${API}")), f"fetch senza l'indirizzo dell'API: {arg}"
+        assert arg.strip().startswith(("API_BASE", "`${API_BASE}", "new URL(name")), \
+            f"fetch senza l'indirizzo dell'API: {arg}"
+    assert html.count("new URL(name, document.baseURI") == 1
+    # Pyodide tratta una globale `API` come il proprio runtime e non si avvia: va evitata.
+    assert not re.search(r"\b(const|let|var)\s+API\b", html)
+    for name in re.findall(r"siteFile\(\s*([^)]+)\)", html):
+        assert name.strip().startswith(('"state/', '"py/', '"data/', "name")), f"file del sito inatteso: {name}"
 
 
 @pytest.mark.parametrize("path", ["/api/backtest", "/api/backtest/costs", "/api/data-health"])
