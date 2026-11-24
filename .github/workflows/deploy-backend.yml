@@ -1,0 +1,67 @@
+# Aggiorna bot e API sulla VM Oracle Always Free a ogni push su main.
+# Si attiva solo dopo aver impostato la variabile VM_HOST e i secret VM_SSH_KEY e
+# CONTROL_API_KEY. Vedi README → "Deploy".
+name: Deploy backend
+
+on:
+  push:
+    branches: [main]
+    paths: ['**.py', requirements.txt, templates/**, Dockerfile, deploy/**, .github/workflows/deploy-backend.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: vars.VM_HOST != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      APP: quant-trading-system
+      VM_HOST: ${{ vars.VM_HOST }}
+      VM_USER: ${{ vars.VM_USER || 'ubuntu' }}
+      API_HOST: ${{ vars.API_HOST }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Chiave SSH
+        env:
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VM_SSH_KEY" > ~/.ssh/id_vm && chmod 600 ~/.ssh/id_vm
+          ssh-keyscan -H "$VM_HOST" >> ~/.ssh/known_hosts
+      - name: Configurazione dell'app
+        env:
+          CONTROL_API_KEY: ${{ secrets.CONTROL_API_KEY }}
+          CORS_ORIGINS: ${{ vars.CORS_ORIGINS || 'https://lorenzomp7.github.io' }}
+          SYMBOL: ${{ vars.SYMBOL }}
+          DATA_INTERVAL: ${{ vars.DATA_INTERVAL }}
+          DATA_PERIOD: ${{ vars.DATA_PERIOD }}
+        run: |
+          [ -n "$API_HOST" ] || API_HOST="quant.${VM_HOST//./-}.sslip.io"
+          umask 077
+          : > deploy/.env
+          put() { [ -z "$2" ] || printf "%s='%s'\n" "$1" "$2" >> deploy/.env; }
+          put CONTROL_API_KEY "$CONTROL_API_KEY"
+          put CORS_ORIGINS "$CORS_ORIGINS"
+          put SYMBOL "$SYMBOL"
+          put DATA_INTERVAL "$DATA_INTERVAL"
+          put DATA_PERIOD "$DATA_PERIOD"
+          printf '%s {\n\treverse_proxy %s:10000\n}\n' "$API_HOST" "$APP" > deploy/site.caddy
+          echo "Indirizzo dell'API: https://$API_HOST"
+      - name: Copia sulla VM e avvia
+        run: |
+          SSH="ssh -i $HOME/.ssh/id_vm"
+          $SSH "$VM_USER@$VM_HOST" "sudo mkdir -p /opt/apps/$APP && sudo chown \$USER /opt/apps/$APP && (command -v rsync >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq rsync))"
+          rsync -az --delete -e "$SSH" --exclude .git --exclude __pycache__ ./ "$VM_USER@$VM_HOST:/opt/apps/$APP/"
+          $SSH "$VM_USER@$VM_HOST" "bash /opt/apps/$APP/deploy/remote-deploy.sh $APP"
+      - name: Controllo
+        run: |
+          [ -n "$API_HOST" ] || API_HOST="quant.${VM_HOST//./-}.sslip.io"
+          for i in $(seq 1 20); do curl -fsS "https://$API_HOST/health" && exit 0; sleep 6; done
+          echo "L'API non risponde su https://$API_HOST/health" && exit 1

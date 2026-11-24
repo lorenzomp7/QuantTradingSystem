@@ -1,0 +1,52 @@
+# Pubblica la dashboard su GitHub Pages: https://lorenzomp7.github.io/QuantTradingSystem/
+# config.js la collega all'API sulla VM Oracle (variabili del repo VM_HOST o API_HOST).
+name: GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths: [templates/dashboard.html, .github/workflows/pages.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - name: Prepara il sito
+        env:
+          API_HOST: ${{ vars.API_HOST }}
+          VM_HOST: ${{ vars.VM_HOST }}
+        run: |
+          mkdir _site
+          cp templates/dashboard.html _site/index.html
+          if [ -z "$API_HOST" ] && [ -n "$VM_HOST" ]; then API_HOST="quant.${VM_HOST//./-}.sslip.io"; fi
+          if [ -n "$API_HOST" ]; then
+            printf 'window.QTS_API = "https://%s";\n' "$API_HOST" > _site/config.js
+          else
+            echo '// API non ancora configurata: imposta la variabile VM_HOST del repo' > _site/config.js
+          fi
+          cat _site/config.js
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

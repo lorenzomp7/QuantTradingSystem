@@ -5,7 +5,8 @@ Entry point di QuantTradingSystem.
 
 Avvia un server FastAPI che espone:
     GET  /                    -> dashboard web (stato bot, segnali, backtest, log)
-    GET  /health              -> health check (usato da Render)
+    GET  /health              -> health check (usato dal deploy e da Docker)
+    GET  /config.js           -> indirizzo dell'API per la dashboard (vuoto: stesso server)
     GET  /api/status          -> stato del bot, ultimo segnale, account
     POST /api/bot/start       -> avvia il loop di trading        (protetto)
     POST /api/bot/stop        -> ferma il loop di trading        (protetto)
@@ -18,8 +19,11 @@ Avvia un server FastAPI che espone:
     GET  /docs                -> documentazione OpenAPI interattiva (Swagger)
 
 Gli endpoint "protetti" richiedono l'header `X-API-Key` se la variabile
-d'ambiente CONTROL_API_KEY è impostata (fortemente consigliato su Render,
+d'ambiente CONTROL_API_KEY è impostata (fortemente consigliato in produzione,
 dato che il servizio è pubblicamente raggiungibile).
+
+La dashboard può stare anche su GitHub Pages: CORS_ORIGINS elenca le origini
+autorizzate a chiamare l'API dal browser.
 
 Avvio locale:
     uvicorn main:app --reload --port 10000
@@ -33,13 +37,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from config import settings
 from core.engine import TradingEngine
 from strategy.quant_model import MovingAverageCrossover, StrategyParams
 from strategy.metrics import bars_per_year, infer_market
-from utils.keep_alive import keep_alive_loop
 from utils.logger import get_logger, memory_handler, setup_logging
 
 __version__ = "1.0.0"
@@ -54,7 +58,7 @@ DASHBOARD_HTML = (Path(__file__).parent / "templates" / "dashboard.html").read_t
 # ------------------------------------------------------------- Lifecycle
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Avvio/arresto ordinato: il bot si ferma pulito quando Render riavvia."""
+    """Avvio/arresto ordinato: il bot si ferma pulito quando il container si riavvia."""
     logger.info(
         "Avvio %s v%s (env=%s, broker=%s, data=%s, symbol=%s, candele=%s)",
         settings.app_name, __version__, settings.environment,
@@ -65,18 +69,8 @@ async def lifespan(app: FastAPI):
     if settings.auto_start_bot:
         await engine.start()
 
-    keep_alive_task = None
-    if settings.keep_alive and settings.keep_alive_url:
-        keep_alive_task = asyncio.create_task(
-            keep_alive_loop(settings.keep_alive_url, settings.keep_alive_interval_seconds), name="keep-alive"
-        )
-    elif settings.keep_alive:
-        logger.info("Keep-alive non attivo: nessun URL pubblico (RENDER_EXTERNAL_URL/KEEP_ALIVE_URL).")
-
     yield
 
-    if keep_alive_task:
-        keep_alive_task.cancel()
     await engine.stop()
     logger.info("Shutdown completato.")
 
@@ -87,6 +81,15 @@ app = FastAPI(
     description="Sistema di trading quantitativo con dashboard di monitoraggio.",
     lifespan=lifespan,
 )
+
+# La dashboard pubblicata su GitHub Pages chiama l'API da un'altra origine.
+if settings.cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_methods=["GET", "POST"],
+        allow_headers=["X-API-Key"],
+    )
 
 
 # ------------------------------------------------------------ Sicurezza
@@ -103,6 +106,12 @@ def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def dashboard() -> str:
     return DASHBOARD_HTML
+
+
+@app.get("/config.js", include_in_schema=False)
+async def dashboard_config() -> Response:
+    # Su GitHub Pages questo file imposta window.QTS_API; qui l'API è sullo stesso server.
+    return Response("// API sullo stesso server della dashboard\n", media_type="text/javascript")
 
 
 @app.get("/health", tags=["system"])

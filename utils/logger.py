@@ -3,7 +3,7 @@ utils/logger.py
 ===============
 Logging centralizzato.
 
-Oltre allo stream su stdout (che Render raccoglie nella sezione "Logs"),
+Oltre allo stream su stdout (che Docker raccoglie: `docker logs quant-trading-system`),
 manteniamo in memoria gli ultimi N record in un buffer circolare, così da
 poterli esporre via API (`GET /logs`) e mostrarli nella dashboard web.
 """

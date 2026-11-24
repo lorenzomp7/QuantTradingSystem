@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 import main
@@ -73,3 +75,32 @@ def test_backtest_endpoint_annualizes_by_market():
         spy = client.get("/api/backtest", params={"symbol": "SPY"}).json()["metrics"]
         assert btc["bars_per_year"] == 365
         assert spy["bars_per_year"] == 252
+
+
+def test_dashboard_on_github_pages_can_call_the_api():
+    """La dashboard su GitHub Pages è su un'altra origine: servono CORS e il preflight per X-API-Key."""
+    pages = "https://lorenzomp7.github.io"
+    with TestClient(main.app) as client:
+        r = client.get("/api/status", headers={"Origin": pages})
+        assert r.headers["access-control-allow-origin"] == pages
+        pre = client.options("/api/bot/start", headers={
+            "Origin": pages, "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "x-api-key"})
+        assert pre.status_code == 200
+        assert "x-api-key" in pre.headers["access-control-allow-headers"].lower()
+        other = client.get("/api/status", headers={"Origin": "https://example.com"})
+        assert "access-control-allow-origin" not in other.headers
+        cfg = client.get("/config.js")
+        assert cfg.status_code == 200 and "javascript" in cfg.headers["content-type"]
+        assert "QTS_API" not in cfg.text
+
+
+def test_dashboard_calls_go_through_the_api_address():
+    # Su GitHub Pages un percorso relativo ("/api/...") andrebbe a github.io, non alla VM.
+    import re
+
+    html = (Path(main.__file__).parent / "templates" / "dashboard.html").read_text(encoding="utf-8")
+    calls = re.findall(r"fetch\(\s*([^,)]+)", html)
+    assert calls, "nessuna chiamata fetch trovata"
+    for arg in calls:
+        assert arg.strip().startswith(("API", "`${API}")), f"fetch senza l'indirizzo dell'API: {arg}"
