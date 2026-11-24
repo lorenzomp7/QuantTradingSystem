@@ -6,10 +6,13 @@ grafici, indicatori, notifiche e backtest dal telefono, collegato ai punti 19, 2
 
 | App | Pacchetto | Scheda |
 |---|---|---|
-| TradingView | `com.tradingview.tradingviewapp` | da fare |
-| BTS – Backtest Strategy | `com.backtest` | da fare |
-| TradeTracer | `ai.tradetracer.app` | da fare |
-| Replay Trader | `nl.buqe.chartreplay` | da fare |
+| TradingView | `com.tradingview.tradingviewapp` | [scheda](tradingview.md) (fonti pubbliche) |
+| BTS – Backtest Strategy | `com.backtest` | [scheda](bts-backtest-strategy.md) (fonti pubbliche) |
+| TradeTracer | `ai.tradetracer.app` | [scheda](tradetracer.md) (nessuna fonte pubblica, attende l'APK) |
+| Replay Trader | `nl.buqe.chartreplay` | [scheda](replay-trader.md) (fonti pubbliche) |
+
+Le schede sono compilate da **fonti pubbliche** con le fonti per riga; lo script qui sotto
+le completa con librerie, permessi e componenti quando ci sono gli APK.
 
 ## Come si fanno
 

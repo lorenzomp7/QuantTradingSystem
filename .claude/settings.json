@@ -36,5 +36,8 @@
         ]
       }
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "rea"
+  ]
 }

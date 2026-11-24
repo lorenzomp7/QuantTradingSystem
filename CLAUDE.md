@@ -35,4 +35,12 @@ AGENTS.md (importato sopra) vale per tutti gli agenti; qui solo ciò che riguard
 
 ### Server MCP
 
-- Nessun server MCP di progetto: per questa repo non ne serve nessuno nel cloud (GitHub è già disponibile tramite `gh`).
+- `rea` ([REA](https://github.com/morluto/rea) di morluto, MIT, 6.10.1) è dichiarato in `.mcp.json`
+  (`node .claude/rea/rea.mjs`, uguale su Linux, macOS e Windows) e attivo in `.claude/settings.json`:
+  in ogni sessione Claude Code su questa repo, nel cloud e sul PC, ci sono i suoi 61 strumenti per gli
+  APK (famiglie `android,apktool,artifact,adb,flutter`: manifest, firma, risorse, classi, Flutter, adb).
+  JADX e Apktool li installa `.claude/rea/installa.sh` (nel cloud parte da solo all'avvio della
+  sessione; prima della prima analisi `bash .claude/rea/installa.sh --attendi`) o, sul PC Windows,
+  `.claude\rea\installa-windows.ps1`, che registra REA anche in Claude Desktop. Come usarlo: skill
+  `rea`. Controllo: `node .claude/rea/check.mjs [file.apk]`.
+- GitHub è già disponibile tramite `gh`.
