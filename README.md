@@ -2,8 +2,10 @@
 
 Sistema di trading quantitativo in Python 3.10+ con dashboard web (FastAPI),
 strategia di esempio **Moving Average Crossover**, backtest vettorizzato
-(Pandas/NumPy), paper broker e deploy automatico gratuito: dashboard su **GitHub Pages**,
-bot e API su una **VM Oracle Cloud Always Free** (0 €/mese, sempre accesa).
+(Pandas/NumPy), paper broker e deploy automatico gratuito (0 €/mese) in due modi:
+- **senza server**: dashboard su **GitHub Pages**, bot eseguito ogni ora da **GitHub Actions**,
+  backtest calcolato nel browser con Pyodide;
+- **con VM**: dashboard su GitHub Pages, bot e API sempre accesi su una **VM Oracle Cloud Always Free**.
 
 > ⚠️ Progetto a scopo didattico. Il broker di default è **simulato** (paper):
 > nessun ordine reale viene inviato finché non si implementa un broker reale.
@@ -41,7 +43,11 @@ QuantTradingSystem/
 │   ├── broker.py            # PaperBroker + placeholder Alpaca / ccxt, stati dell'ordine
 │   └── reconcile.py         # Ricalcolo indipendente del registro del PaperBroker
 ├── templates/
-│   └── dashboard.html       # Dashboard web (stato, controlli, backtest, log)
+│   └── dashboard.html       # Dashboard web (stato, controlli, backtest, log); anche statica
+├── web/
+│   └── static_api.py        # /api/backtest e /api/backtest/costs per Pyodide (sito senza server)
+├── tools/                   # bot_once (un ciclo, stato su file), data_snapshot, build_static_site,
+│                            # prove nel browser, confronti esterni, benchmark
 ├── tests/
 │   ├── conftest.py
 │   ├── test_api.py
@@ -234,7 +240,39 @@ git push -u origin main
 Verifica prima del push che `.env` **non** compaia in `git status`
 (è escluso da `.gitignore`).
 
-### 2. Deploy gratuito: GitHub Pages + VM Oracle
+### 2a. Deploy gratuito senza server: GitHub Pages + GitHub Actions
+
+È la modalità attiva finché nel repo non ci sono le variabili `VM_HOST` o `API_HOST`.
+Costo: 0 € (repo pubblico: minuti di Actions e Pages gratuiti).
+
+- **Bot** → ogni ora (minuto 17) il workflow `pages.yml` esegue un ciclo (`tools/bot_once.py`,
+  broker paper, `BTC-USD` a candele 1h su 60 giorni). Conto, log e storia dell'equity
+  restano nel branch `bot-state` (un solo commit, riscritto a ogni esecuzione).
+- **Dashboard** → <https://lorenzomp7.github.io/QuantTradingSystem/>: stato e log dai file del
+  bot; backtest e tabella dei costi calcolati nel browser con [Pyodide](https://pyodide.org)
+  dallo stesso codice Python dell'API, sui prezzi giornalieri di Yahoo aggiornati una volta al
+  giorno (`tools/data_snapshot.py`, 10 anni per SPY, QQQ, AAPL, MSFT, BTC-USD, ETH-USD). La prima
+  apertura scarica circa 20 MB (Python, NumPy, pandas), poi il browser li tiene in cache.
+
+Attivazione, una volta sola:
+
+1. Unisci il lavoro su `main`: le esecuzioni pianificate partono solo dal branch predefinito.
+2. **Settings → Pages → Source: GitHub Actions**.
+3. **Actions → GitHub Pages → Run workflow**: primo ciclo e prima pubblicazione.
+
+| Variabile del repo (facoltativa) | Default | Effetto |
+|---|---|---|
+| `BOT_ENABLED` | `true` | `false` = cicli saltati, la pagina resta |
+| `BOT_SYMBOL` | `BTC-USD` | simbolo del bot |
+| `SNAPSHOT_SYMBOLS` | `SPY,QQQ,AAPL,MSFT,BTC-USD,ETH-USD` | simboli con i prezzi per il backtest; gli altri usano la serie mock |
+
+Limiti rispetto alla VM: un ciclo all'ora invece che al minuto, e GitHub può ritardare o saltare
+un'esecuzione pianificata; dopo 60 giorni senza commit sul repo GitHub sospende le esecuzioni
+pianificate (si riattivano da Actions). Niente pulsanti Avvia/Ferma: si usa `BOT_ENABLED` o
+*Run workflow*. Per ripartire con un conto nuovo cancella il branch `bot-state`.
+Prova in locale: `PYODIDE_DIR=… bash tools/smoke_static.sh` (vedi l'intestazione dello script).
+
+### 2b. Deploy gratuito con VM: GitHub Pages + VM Oracle
 
 - **Dashboard** → GitHub Pages, <https://lorenzomp7.github.io/QuantTradingSystem/> (workflow `pages.yml`).
 - **API + bot** → container Docker su una VM Oracle Cloud *Always Free* condivisa con gli altri progetti,
@@ -258,7 +296,8 @@ Verifica prima del push che `.env` **non** compaia in `git status`
    su Pages la usa in automatico; la dashboard resta disponibile anche all'indirizzo dell'API.
 5. Nella dashboard inserisci `CONTROL_API_KEY` in alto a destra per avviare/fermare il bot.
 
-Dai push successivi su `main` i due workflow si aggiornano da soli.
+Dai push successivi su `main` i due workflow si aggiornano da soli. Con `VM_HOST` impostata
+`pages.yml` collega la pagina alla VM e non esegue più il bot su Actions.
 
 ### Variabili d'ambiente
 

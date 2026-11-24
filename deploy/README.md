@@ -1,5 +1,9 @@
 # Backend sulla VM Oracle Cloud (Always Free)
 
+> La VM è facoltativa: senza `VM_HOST` il bot gira ogni ora su GitHub Actions e la dashboard
+> funziona da sola su GitHub Pages (README, sezione «Deploy gratuito senza server»). Questa guida
+> serve quando vuoi il bot sempre acceso, i controlli Avvia/Ferma e l'API.
+
 La parte statica del progetto è su **GitHub Pages**; il server gira su una VM Oracle Cloud
 *Always Free*, condivisa con gli altri progetti (BoatRadar, DressIt, QuantTradingSystem). Costo: **0 €/mese** entro i limiti Always Free (Ampere A1: 2 OCPU e
 12 GB di RAM in totale, 200 GB di disco, 10 TB/mese di traffico in uscita).

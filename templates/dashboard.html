@@ -233,7 +233,7 @@ async function control(action) {
 async function backtest() {
   const q = new URLSearchParams({ symbol: $("bt-symbol").value, short_window: $("bt-short").value,
     long_window: $("bt-long").value, period: $("bt-period").value });
-  $("metrics").innerHTML = STATIC && !pyReady ? "<small>Preparo Python nel browser (la prima volta scarica circa 15 MB)…</small>" : "<small>Calcolo in corso…</small>";
+  $("metrics").innerHTML = STATIC && !pyReady ? "<small>Preparo Python nel browser (la prima volta scarica circa 20 MB)…</small>" : "<small>Calcolo in corso…</small>";
   let r, body;
   try { r = await apiGet("/api/backtest", q); body = r.body; }
   catch (e) { $("metrics").innerHTML = `<small>${STATIC ? "Calcolo nel browser non riuscito" : "API non raggiungibile"}: ${esc(String(e))}</small>`; return; }
