@@ -146,6 +146,43 @@ class PaperBroker(BaseBroker):
         """Aggiorna il prezzo di mercato per la valorizzazione del portafoglio."""
         self.last_prices[symbol] = price
 
+    # ------------------------------------------------------- Stato su disco
+    def to_state(self) -> dict:
+        """Stato completo, serializzabile in JSON (bot su GitHub Actions: un ciclo per esecuzione)."""
+        with self._lock:
+            return {
+                "version": 1,
+                "initial_cash": self.initial_cash,
+                "fee_bps": self.fee_bps,
+                "cash": self.cash,
+                "positions": dict(self.positions),
+                "last_prices": dict(self.last_prices),
+                "orders": [o.to_dict() for o in self.orders],
+                "rejected_orders": [o.to_dict() for o in self.rejected_orders],
+                "rejected_count": self.rejected_count,
+            }
+
+    @classmethod
+    def from_state(cls, state: dict) -> "PaperBroker":
+        """
+        Ricrea il broker da `to_state()` e lo verifica con la riconciliazione
+        indipendente: uno stato modificato a mano o corrotto (cassa o posizioni
+        che non tornano con gli ordini) solleva ValueError invece di ripartire.
+        """
+        from execution.reconcile import reconcile_broker
+
+        b = cls(initial_cash=float(state["initial_cash"]), fee_bps=float(state["fee_bps"]))
+        b.cash = float(state["cash"])
+        b.positions = {k: float(v) for k, v in state.get("positions", {}).items()}
+        b.last_prices = {k: float(v) for k, v in state.get("last_prices", {}).items()}
+        b.orders = [Order(**o) for o in state.get("orders", [])]
+        b.rejected_orders.extend(Order(**o) for o in state.get("rejected_orders", []))
+        b.rejected_count = int(state.get("rejected_count", len(b.rejected_orders)))
+        issues = reconcile_broker(b).issues
+        if issues:
+            raise ValueError(f"Stato del broker incoerente con i suoi ordini: {issues}")
+        return b
+
     def get_account(self) -> dict:
         with self._lock:
             market_value = sum(q * self.last_prices.get(s, 0.0) for s, q in self.positions.items())
