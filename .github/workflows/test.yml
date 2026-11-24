@@ -52,9 +52,17 @@ jobs:
         timeout-minutes: 5
         env:
           OUT_DIR: ${{ runner.temp }}/qts-smoke
+      # Come su GitHub Pages: pagina e API su origini diverse (CORS, config.js).
+      - run: bash tools/smoke_dashboard.sh
+        timeout-minutes: 5
+        env:
+          PAGES: "1"
+          OUT_DIR: ${{ runner.temp }}/qts-smoke-pages
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: dashboard-screenshots
-          path: ${{ runner.temp }}/qts-smoke
+          path: |
+            ${{ runner.temp }}/qts-smoke
+            ${{ runner.temp }}/qts-smoke-pages
           if-no-files-found: ignore

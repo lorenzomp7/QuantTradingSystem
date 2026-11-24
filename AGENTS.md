@@ -23,7 +23,7 @@ Cloud Always Free (`Dockerfile`, `deploy/`, workflow in `.github/workflows/`). L
 | Avvio locale | `cp .env.example .env` poi `uvicorn main:app --reload --port 10000` |
 | Dati senza rete | `DATA_SOURCE=mock` |
 | Salute della fonte dati | `python -m utils.data_health` (usa la rete; esce con 1 se Yahoo non risponde) |
-| Prova della dashboard nel browser | `bash tools/smoke_dashboard.sh` (agent-browser; senza CDN: `ALLOW_NO_CHARTJS=1` o `CHARTJS_FILE=…/chart.umd.js`) |
+| Prova della dashboard nel browser | `bash tools/smoke_dashboard.sh`; `PAGES=1` per pagina e API su origini diverse come su GitHub Pages (agent-browser; senza CDN: `ALLOW_NO_CHARTJS=1` o `CHARTJS_FILE=…/chart.umd.js`) |
 | Confronto con Vibe-Trading | `python tools/compare_external.py --vibe-python <python con vibe-trading-ai>` (ambiente separato, Python ≥ 3.11) |
 | Benchmark della griglia | `python tools/bench_grid.py` (ciclo contro vettorizzata; profilo: `flameox capture --provider py-spy --operation rank_cpu_hotspots -- python tools/bench_grid.py --mode loop --repeat 1`) |
 

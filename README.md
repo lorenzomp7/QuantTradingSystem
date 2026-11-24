@@ -181,8 +181,12 @@ walk_forward(MovingAverageCrossover, data, [{"short_window": 10, "long_window": 
 `tools/smoke_dashboard.sh` usa [agent-browser](https://github.com/vercel-labs/agent-browser)
 (Apache-2.0): avvia l'app con dati mock, apre la dashboard a 1280×800 e 390×844, controlla
 metriche, grafico e assenza di errori nella pagina, prova Avvia/Ferma senza chiave (401) e
-con chiave, salva gli screenshot. Con `BASE_URL=… API_KEY=…` prova una dashboard già online.
-In CI gira come job facoltativo `smoke-dashboard`.
+con chiave, salva gli screenshot. Con `PAGES=1` serve la pagina come la pubblica
+`pages.yml` (con `config.js`) da un'altra origine e controlla anche CORS: origine della
+dashboard autorizzata, preflight di `X-API-Key`, origine estranea rifiutata. Con
+`BASE_URL=… API_URL=… API_KEY=…` prova la dashboard pubblicata su GitHub Pages contro
+l'API sulla VM; se il bot era già acceso non lo ferma. In CI gira come job facoltativo
+`smoke-dashboard`, nelle due modalità.
 
 ```bash
 npm i -g agent-browser && agent-browser install --with-deps
