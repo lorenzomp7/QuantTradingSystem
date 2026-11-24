@@ -176,6 +176,14 @@ walk_forward(MovingAverageCrossover, data, [{"short_window": 10, "long_window": 
              train_bars=400, test_bars=150, holdout_bars=150)
 ```
 
+### App di riferimento analizzate con REA
+
+`tools/analyze_apps.sh` usa [REA](https://github.com/morluto/REA) (MIT) sul tuo computer, con il
+telefono collegato via adb: copia gli APK di TradingView, BTS, TradeTracer e Replay Trader fuori
+dalla repo, ne legge manifest, librerie e stringhe, e `tools/app_report.py` scrive una scheda per
+app in `docs/app-analizzate/` (grafici → punti 19 e 27, indicatori → 29, notifiche → 31, backtest
+e replay → 26 e 27). Nelle schede solo dichiarazioni e conteggi, niente codice copiato.
+
 ### Prova della dashboard nel browser
 
 `tools/smoke_dashboard.sh` usa [agent-browser](https://github.com/vercel-labs/agent-browser)

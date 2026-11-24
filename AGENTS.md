@@ -26,6 +26,7 @@ Cloud Always Free (`Dockerfile`, `deploy/`, workflow in `.github/workflows/`). L
 | Prova della dashboard nel browser | `bash tools/smoke_dashboard.sh`; `PAGES=1` per pagina e API su origini diverse come su GitHub Pages (agent-browser; senza CDN: `ALLOW_NO_CHARTJS=1` o `CHARTJS_FILE=…/chart.umd.js`) |
 | Confronto con Vibe-Trading | `python tools/compare_external.py --vibe-python <python con vibe-trading-ai>` (ambiente separato, Python ≥ 3.11) |
 | Benchmark della griglia | `python tools/bench_grid.py` (ciclo contro vettorizzata; profilo: `flameox capture --provider py-spy --operation rank_cpu_hotspots -- python tools/bench_grid.py --mode loop --repeat 1`) |
+| Schede delle app di riferimento | `bash tools/analyze_apps.sh` (sul computer con il telefono via adb; REA, JADX, Apktool; vedi `docs/app-analizzate/README.md`) |
 
 Esegui la verifica standard prima di dichiarare finito un cambio. Riporta i
 comandi davvero eseguiti e i loro esiti.
