@@ -9,6 +9,7 @@
   :root { --bg:#0f1419; --card:#1a2029; --fg:#e6e9ed; --muted:#8b95a1; --accent:#3b82f6;
           --green:#22c55e; --red:#ef4444; --border:#2a3240; }
   * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
   body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
   header { padding:16px; border-bottom:1px solid var(--border); display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; }
   h1 { font-size:20px; margin:0; } h2 { font-size:15px; margin:0 0 12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
@@ -26,6 +27,8 @@
   .on { background:rgba(34,197,94,.15); color:var(--green); } .off { background:rgba(239,68,68,.15); color:var(--red); }
   pre { background:#0b0f14; border-radius:6px; padding:10px; font-size:12px; max-height:320px; overflow:auto; margin:0; white-space:pre-wrap; word-break:break-word; }
   .metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px; margin:12px 0; }
+  table.costs { border-collapse:collapse; font-size:13px; } table.costs th, table.costs td { padding:4px 10px; text-align:right; border-bottom:1px solid var(--border); }
+  table.costs th { color:var(--muted); font-weight:500; }
   .metric { background:#0b0f14; border-radius:6px; padding:8px; } .metric b { display:block; font-size:18px; } .metric small { color:var(--muted); }
   #msg { font-size:13px; color:var(--muted); min-height:18px; margin-top:8px; }
 </style>
@@ -33,17 +36,18 @@
 <body>
 <header>
   <h1>📈 QuantTradingSystem <span id="badge" class="badge off">—</span></h1>
-  <div style="flex:1 1 220px; max-width:320px;"><input id="apikey" type="password" placeholder="X-API-Key (endpoint di controllo)"></div>
+  <div id="apikey-box" style="flex:1 1 220px; max-width:320px;"><input id="apikey" type="password" placeholder="X-API-Key (endpoint di controllo)"></div>
 </header>
 <main>
   <section class="card">
     <h2>Stato del bot</h2>
     <div class="kv" id="status"></div>
-    <div class="row" style="margin-top:14px;">
+    <div class="row" id="controls" style="margin-top:14px;">
       <button onclick="control('start')">▶ Avvia</button>
       <button class="danger" onclick="control('stop')">■ Ferma</button>
       <button class="secondary" onclick="control('run-once')">⟳ Esegui un ciclo</button>
     </div>
+    <div id="static-controls" hidden style="margin-top:14px; font-size:13px; color:var(--muted);"></div>
     <div id="msg"></div>
   </section>
 
@@ -64,6 +68,8 @@
     <div class="metrics" id="metrics"></div>
     <div style="position:relative; height:300px;"><canvas id="chart"></canvas></div>
     <small style="color:var(--muted)">Blu = investito · grigio tratteggiato = in liquidità (equity ferma) · arancio = Buy &amp; Hold · <span style="color:var(--green)">●</span> BUY / <span style="color:var(--red)">●</span> SELL</small>
+    <h2 style="margin-top:16px;">Sensibilità ai costi (rendimento %)</h2>
+    <div id="costs" style="overflow-x:auto;"><small>—</small></div>
   </section>
 
   <section class="card wide">
@@ -72,43 +78,158 @@
   </section>
 </main>
 
+<script src="config.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 let chart;
-try { $("apikey").value = localStorage.getItem("qts_api_key") || ""; } catch (e) {}
-$("apikey").addEventListener("change", () => { try { localStorage.setItem("qts_api_key", $("apikey").value); } catch (e) {} });
+// La chiave resta solo per questa scheda (sessionStorage): su GitHub Pages l'origine
+// lorenzomp7.github.io è condivisa da tutte le pagine dell'account, e localStorage con lei.
+try { localStorage.removeItem("qts_api_key"); $("apikey").value = sessionStorage.getItem("qts_api_key") || ""; } catch (e) {}
+$("apikey").addEventListener("change", () => { try { sessionStorage.setItem("qts_api_key", $("apikey").value); } catch (e) {} });
 
 const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const kv = (obj) => Object.entries(obj).map(([k, v]) =>
   `<span>${esc(k)}</span><span>${v === null || v === undefined ? "—" : esc(typeof v === "object" ? JSON.stringify(v) : v)}</span>`).join("");
 
+// config.js sceglie la modalità:
+// - window.QTS_API: indirizzo dell'API (VM); vuoto = stesso server FastAPI;
+// - window.QTS_STATIC: niente server. Stato e log dai file pubblicati dal bot su GitHub Actions,
+//   backtest e costi calcolati nel browser con Pyodide e lo stesso codice Python dell'API.
+const STATIC = window.QTS_STATIC || null;
+// Non chiamarla API: Pyodide legge una globale con quel nome (runtimeEnv) e non si avvia.
+const API_BASE = (window.QTS_API || "").replace(/\/$/, "");
+// File statici del sito (stessa origine della pagina, mai l'API).
+const siteFile = (name) => fetch(new URL(name, document.baseURI), { cache: "no-store" });
+
+// Pyodide: caricato una volta sola, alla prima richiesta di backtest.
+let pyReady = null;
+function loadPython() {
+  if (pyReady) return pyReady;
+  pyReady = (async () => {
+    const base = STATIC.pyodide.replace(/\/?$/, "/");
+    let loadPyodide;
+    try { ({ loadPyodide } = await import(base + "pyodide.mjs")); }
+    catch (e) { throw new Error(`Pyodide non scaricabile da ${base} (${e.message || e})`); }
+    const py = await loadPyodide({ indexURL: base });
+    const manifest = await (await siteFile("py/manifest.json")).json();
+    await py.loadPackage(manifest.packages);
+    const root = "/home/pyodide/qts";
+    for (const rel of manifest.files) {
+      const r = await siteFile("py/" + rel);
+      if (!r.ok) throw new Error(`modulo ${rel} mancante (${r.status})`);
+      const dir = root + "/" + rel.split("/").slice(0, -1).join("/");
+      py.FS.mkdirTree(dir);
+      py.FS.writeFile(root + "/" + rel, await r.text());
+    }
+    py.runPython(`import sys; sys.path.insert(0, "${root}")`);
+    const api = py.pyimport("web.static_api");
+    const json = py.pyimport("json");
+    let index = { symbols: {} };
+    try { const r = await siteFile("data/index.json"); if (r.ok) index = await r.json(); } catch (e) {}
+    return { py, api, json, index };
+  })();
+  pyReady.catch(() => { pyReady = null; });
+  return pyReady;
+}
+
+const csvCache = {};
+async function snapshotFor(ctx, symbol) {
+  let name;
+  try { name = ctx.api.snapshot_name(symbol); } catch (e) { return { csv: null }; }   // la validazione la fa backtest()
+  const info = Object.values(ctx.index.symbols || {}).find(x => x.file === name) || null;
+  if (!info) return { csv: null, info };
+  if (!(name in csvCache)) {
+    const r = await siteFile("data/" + name);
+    csvCache[name] = r.ok ? await r.text() : null;
+  }
+  return { csv: csvCache[name], info };
+}
+
+async function staticGet(path, q) {
+  if (path === "/api/status") {
+    const r = await siteFile("state/status.json");
+    if (r.status === 404) return { ok: true, status: 200, body: null };
+    return { ok: r.ok, status: r.status, body: r.ok ? await r.json() : { detail: "stato non leggibile" } };
+  }
+  if (path === "/api/logs") {
+    const r = await siteFile("state/logs.json");
+    const logs = r.ok ? await r.json() : [];
+    // In ordine cronologico, come /api/logs (refresh() li inverte per mostrare prima i più recenti).
+    return { ok: true, status: 200, body: logs.slice(-Number(q.get("limit") || 100)) };
+  }
+  const fn = { "/api/backtest": "backtest", "/api/backtest/costs": "costs" }[path];
+  if (!fn) return { ok: false, status: 404, body: { detail: `${path} non disponibile senza server` } };
+  const ctx = await loadPython();
+  const params = Object.fromEntries(q.entries());
+  const snap = await snapshotFor(ctx, params.symbol || "");
+  try {
+    const out = JSON.parse(ctx.json.dumps(ctx.api[fn](ctx.py.toPy(params), snap.csv)));
+    if (snap.info && snap.csv) out.data_as_of = snap.info.last;
+    return { ok: true, status: 200, body: out };
+  } catch (e) {
+    const msg = String(e.message || e).trim().split("\n").filter(Boolean).pop();
+    return { ok: false, status: 422, body: { detail: msg.replace(/^ValueError:\s*/, "") } };
+  }
+}
+
+// Unico punto d'accesso ai dati: API (stesso server o VM) oppure file statici + Pyodide.
+async function apiGet(path, q = new URLSearchParams()) {
+  if (STATIC) return staticGet(path, q);
+  const qs = q.toString();
+  const r = await fetch(API_BASE + path + (qs ? "?" + qs : ""));
+  return { ok: r.ok, status: r.status, body: await r.json() };
+}
+
+if (STATIC) {
+  $("controls").hidden = true; $("apikey-box").hidden = true;
+  const sc = $("static-controls"); sc.hidden = false;
+  const link = STATIC.actions_url ? ` <a href="${esc(STATIC.actions_url)}" target="_blank" rel="noopener" style="color:var(--accent)">Apri il workflow su GitHub Actions</a>` : "";
+  sc.innerHTML = "Senza server: il bot gira su GitHub Actions a ogni esecuzione pianificata. " +
+    "Per un ciclo subito usa «Run workflow»; per fermarlo imposta la variabile del repository BOT_ENABLED a false." + link;
+}
+
 async function refresh() {
   try {
-    const s = await (await fetch("/api/status")).json();
-    $("badge").textContent = s.running ? "RUNNING" : "STOPPED";
-    $("badge").className = "badge " + (s.running ? "on" : "off");
+    const s = (await apiGet("/api/status")).body;
+    if (!s) {
+      $("badge").textContent = "IN ATTESA"; $("status").innerHTML = kv({ Stato: "il bot non ha ancora completato un ciclo" });
+      $("account").innerHTML = ""; $("logs").textContent = "Nessun log";
+      return;
+    }
+    // Senza server lo stato è quello dell'ultima esecuzione: se è vecchio (cron saltato o
+    // sospeso da GitHub, errori ripetuti) la pagina non deve dire "ATTIVO".
+    const ageH = s.written_at ? (Date.now() - Date.parse(s.written_at)) / 3.6e6 : 0;
+    const late = s.mode === "github-actions" && s.running && ageH > 3;
+    $("badge").textContent = late ? "IN RITARDO" : s.running ? (STATIC ? "ATTIVO" : "RUNNING") : "STOPPED";
+    $("badge").className = "badge " + (s.running && !late ? "on" : "off");
     const sig = s.last_signal || {};
     $("status").innerHTML = kv({
       Simbolo: s.symbol, Strategia: s.strategy,
       "SMA": `${s.params.short_window} / ${s.params.long_window}`,
       "Sorgente dati": `${s.data_source} (ultima: ${s.last_data_source_used || "—"})`,
       Candele: `${s.data_interval} (storico ${s.data_period})`,
-      "Intervallo loop": s.loop_interval_seconds + "s", Cicli: s.cycles,
+      ...(s.mode === "github-actions"
+        ? { Esecuzione: `GitHub Actions, ${s.schedule}`, "Stato scritto": s.written_at }
+        : { "Intervallo loop": s.loop_interval_seconds + "s" }),
+      Cicli: s.cycles,
       "Ultimo run": s.last_run_at, "Ultimo segnale": sig.action ? `${sig.action} @ ${sig.close}` : null,
+      "Ordini sospesi": (s.data && s.data.orders_blocked) || null,
       Errore: s.last_error,
     });
     const a = s.account || {};
     $("account").innerHTML = kv({ Broker: a.broker, Cash: a.cash, "Valore posizioni": a.market_value,
-      Equity: a.equity, "P&L": a.pnl, Posizioni: a.positions, Ordini: (a.orders || []).length });
+      Equity: a.equity, "P&L": a.pnl, Posizioni: a.positions,
+      Ordini: (a.order_counts || {}).filled ?? (a.orders || []).length,
+      Rifiutati: (a.order_counts || {}).rejected || null });
 
-    const logs = await (await fetch("/api/logs?limit=100")).json();
+    const logs = (await apiGet("/api/logs", new URLSearchParams({ limit: 100 }))).body;
     $("logs").textContent = logs.reverse().map(l => `${l.timestamp.slice(0,19)} ${l.level.padEnd(7)} ${l.message}`).join("\n") || "Nessun log";
   } catch (e) { $("msg").textContent = "Errore di aggiornamento: " + e; }
 }
 
 async function control(action) {
   $("msg").textContent = "…";
-  const r = await fetch(`/api/bot/${action}`, { method: "POST", headers: { "X-API-Key": $("apikey").value } });
+  const r = await fetch(`${API_BASE}/api/bot/${action}`, { method: "POST", headers: { "X-API-Key": $("apikey").value } });
   const body = await r.json();
   $("msg").textContent = r.ok ? (body.detail || `${body.action} @ ${body.close}`) : `Errore ${r.status}: ${body.detail}`;
   refresh();
@@ -117,15 +238,17 @@ async function control(action) {
 async function backtest() {
   const q = new URLSearchParams({ symbol: $("bt-symbol").value, short_window: $("bt-short").value,
     long_window: $("bt-long").value, period: $("bt-period").value });
-  $("metrics").innerHTML = "<small>Calcolo in corso…</small>";
-  const r = await fetch("/api/backtest?" + q);
-  const body = await r.json();
+  $("metrics").innerHTML = STATIC && !pyReady ? "<small>Preparo Python nel browser (la prima volta scarica circa 20 MB)…</small>" : "<small>Calcolo in corso…</small>";
+  let r, body;
+  try { r = await apiGet("/api/backtest", q); body = r.body; }
+  catch (e) { $("metrics").innerHTML = `<small>${STATIC ? "Calcolo nel browser non riuscito" : "API non raggiungibile"}: ${esc(String(e))}</small>`; return; }
   if (!r.ok) { $("metrics").innerHTML = `<small>Errore: ${esc(JSON.stringify(body.detail))}</small>`; return; }
   const m = body.metrics;
   const show = { "Rendimento %": m.total_return_pct, "Buy&Hold %": m.buy_and_hold_return_pct, "CAGR %": m.cagr_pct,
     "Sharpe": m.sharpe_ratio, "Max DD %": m.max_drawdown_pct, "Trade": m.num_trades, "Win rate %": m.win_rate_pct ?? "—",
-    "Dati": body.data_source };
+    "Dati": body.data_source + (body.data_as_of ? ` al ${body.data_as_of.slice(0, 10)}` : "") };
   $("metrics").innerHTML = Object.entries(show).map(([k, v]) => `<div class="metric"><small>${esc(k)}</small><b>${esc(v)}</b></div>`).join("");
+  costs(q);
   const pts = body.equity_curve, labels = pts.map(p => p.date);
   // Marker sui trade: BUY verde, SELL rosso (i trade cadono sulla barra del segnale).
   const tradeAt = Object.fromEntries((body.trades || []).map(t => [t.date, t.side]));
@@ -153,7 +276,28 @@ async function backtest() {
   }
 }
 
-refresh(); backtest(); setInterval(refresh, 10000);
+async function costs(q) {
+  // Tabella commissioni × slippage dallo stesso backtest (/api/backtest/costs).
+  let r, body;
+  try { r = await apiGet("/api/backtest/costs", q); body = r.body; }
+  catch (e) { $("costs").innerHTML = `<small>${STATIC ? "Calcolo nel browser non riuscito" : "API non raggiungibile"}: ${esc(String(e))}</small>`; return; }
+  if (!r.ok) { $("costs").innerHTML = `<small>Errore: ${esc(JSON.stringify(body.detail))}</small>`; return; }
+  const mults = [...new Set(body.rows.map(x => x.fee_multiplier))];
+  const slips = [...new Set(body.rows.map(x => x.slippage_bps))];
+  const cell = (m, s) => body.rows.find(x => x.fee_multiplier === m && x.slippage_bps === s);
+  const head = `<tr><th>Slippage \\ Commissioni</th>${mults.map(m => `<th>×${esc(m)}</th>`).join("")}</tr>`;
+  const rows = slips.map(s => `<tr><th>${esc(s)} bps</th>${mults.map(m => {
+    const c = cell(m, s); const v = c ? c.total_return_pct : null;
+    const color = v === null ? "" : v >= 0 ? "var(--green)" : "var(--red)";
+    return `<td style="color:${color}" title="Sharpe ${esc(c && c.sharpe_ratio)}">${esc(v ?? "—")}</td>`; }).join("")}</tr>`).join("");
+  const be = body.break_even_brackets.length
+    ? `<small>Il rendimento cambia segno tra ${body.break_even_brackets.map(b => `×${b.fee_multiplier_interval.join(" e ×")} (slippage ${b.slippage_bps} bps)`).map(esc).join("; ")}.</small>`
+    : "";
+  $("costs").innerHTML = `<table class="costs">${head}${rows}</table>${be}`;
+}
+
+// Senza server lo stato cambia al massimo a ogni esecuzione pianificata: basta un controllo al minuto.
+refresh(); backtest(); setInterval(refresh, STATIC ? 60000 : 10000);
 </script>
 </body>
 </html>

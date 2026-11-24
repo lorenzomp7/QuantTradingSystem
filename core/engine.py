@@ -4,7 +4,7 @@ core/engine.py
 Motore del bot: collega dati -> strategia -> broker in un ciclo periodico.
 
 Il loop gira come task asyncio nello stesso processo del web server, così un
-singolo Web Service su Render ospita sia la dashboard/API sia il bot. Le
+singolo container (VM Oracle) ospita sia l'API sia il bot. Le
 operazioni bloccanti (download dati, calcoli Pandas) sono delegate a un
 thread con `asyncio.to_thread` per non bloccare l'event loop di FastAPI.
 """
@@ -17,9 +17,9 @@ from collections import deque
 from datetime import datetime, timezone
 
 from config import Settings
-from execution.broker import BaseBroker, PaperBroker, create_broker
+from execution.broker import STATUS_FILLED, BaseBroker, OrderRejected, PaperBroker, create_broker
 from strategy.quant_model import BaseStrategy, MovingAverageCrossover, StrategyParams
-from utils.data_fetcher import MarketDataFetcher
+from utils.data_fetcher import MarketDataFetcher, bar_age, order_block_reason
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -61,6 +61,8 @@ class TradingEngine:
         self.last_error: str | None = None
         self.cycles = 0
         self.last_signal: dict | None = None
+        self.last_data_info = None   # DataInfo dell'ultimo ciclo (non dei backtest)
+        self._last_rejection: tuple | None = None   # (lato, quantità, cassa) dell'ultimo rifiuto
         self.signal_history: deque[dict] = deque(maxlen=200)
 
     # ------------------------------------------------------------ Stato
@@ -86,6 +88,7 @@ class TradingEngine:
             "data_interval": self.cfg.data_interval,
             "data_period": self.cfg.data_period,
             "last_data_source_used": self.fetcher.last_source_used,
+            "data": self._data_status(),
             "loop_interval_seconds": self.cfg.loop_interval_seconds,
             "started_at": self.started_at,
             "last_run_at": self.last_run_at,
@@ -105,13 +108,19 @@ class TradingEngine:
 
         Si confronta lo *stato* del segnale con la posizione reale (invece di
         reagire solo all'evento di crossover): è più robusto a riavvii del
-        servizio, frequenti su Render (deploy, sleep del piano free).
+        servizio (deploy e riavvii del container).
         """
         if not self._cycle_lock.acquire(blocking=False):
             raise RuntimeError("Un ciclo è già in esecuzione.")
         try:
-            data = self.fetcher.get_ohlcv(self.symbol, self.cfg.data_period, self.cfg.data_interval)
+            data, info = self.fetcher.get_ohlcv_with_info(
+                self.symbol, self.cfg.data_period, self.cfg.data_interval
+            )
             price = float(data["close"].iloc[-1])  # ultimo prezzo disponibile
+            # Dati di ripiego (mock al posto di Yahoo) o vecchi: si calcola il
+            # segnale ma non si inviano ordini (punto 1 del Piano).
+            blocked = order_block_reason(info)
+            self.last_data_info = info
 
             # Con candele intraday l'ultima barra è ancora "in formazione": il
             # segnale si calcola solo sulle candele chiuse, per non far
@@ -122,15 +131,28 @@ class TradingEngine:
             signal["signal_bar_close"] = signal["close"]
             signal["close"] = round(price, 4)
 
-            if isinstance(self.broker, PaperBroker):
+            # Il conto si valorizza solo a prezzi veri: con la serie mock di ripiego
+            # l'equity salterebbe (BTC a ~100 invece che a decine di migliaia).
+            if isinstance(self.broker, PaperBroker) and not info.fallback:
                 self.broker.mark_price(self.symbol, price)
 
             position = self.broker.get_position(self.symbol)
             order = None
-            if signal["signal"] == 1 and position <= 0:
+            if blocked:
+                logger.warning("Ordini sospesi su %s: %s", self.symbol, blocked)
+            elif signal["signal"] == 1 and position <= 0:
                 qty = self._buy_quantity(price)
-                if qty > 0:
-                    order = self.broker.submit_order(self.symbol, "BUY", qty, price)
+                key = ("BUY", qty, self._cash())
+                if qty > 0 and key == self._last_rejection:
+                    # Stesso ordine già rifiutato con la stessa cassa: non ripeterlo a ogni ciclo.
+                    pass
+                elif qty > 0:
+                    try:
+                        order = self.broker.submit_order(self.symbol, "BUY", qty, price)
+                        self._last_rejection = None
+                    except OrderRejected as exc:
+                        order = exc.order  # tenuto dal broker tra i rifiutati
+                        self._last_rejection = key
                 else:
                     logger.warning("Liquidità insufficiente per comprare %s @ %.2f", self.symbol, price)
             elif signal["signal"] == 0 and position > 0:
@@ -138,8 +160,10 @@ class TradingEngine:
 
             # `crossover` = evento sull'ultima barra; `action` = ciò che il bot ha fatto davvero.
             signal["crossover"] = signal["action"]
-            signal["action"] = order.side if order else "HOLD"
+            signal["action"] = order.side if order and order.status == STATUS_FILLED else "HOLD"
             signal["order"] = order.to_dict() if order else None
+            signal["data_source"] = info.source
+            signal["orders_blocked"] = blocked
             signal["evaluated_at"] = _now()
 
             self.last_signal = signal
@@ -159,6 +183,28 @@ class TradingEngine:
             raise
         finally:
             self._cycle_lock.release()
+
+    def _data_status(self) -> dict | None:
+        """
+        Provenienza ed età dei dati dell'ultimo ciclo del bot, per /api/status.
+
+        Non si usa `fetcher.last_info`: lo stesso fetcher serve anche i backtest
+        della dashboard (altro simbolo e intervallo), che lo sovrascriverebbero.
+        """
+        info = self.last_data_info
+        if info is None:
+            return None
+        out = info.to_dict()
+        age = bar_age(info.last_bar)
+        out["age_seconds"] = round(age.total_seconds()) if age is not None else None
+        out["orders_blocked"] = order_block_reason(info)
+        return out
+
+    def _cash(self) -> float | None:
+        try:
+            return float(self.broker.get_account()["cash"])
+        except (NotImplementedError, KeyError):
+            return None
 
     def _buy_quantity(self, price: float) -> float:
         """

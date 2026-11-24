@@ -5,19 +5,25 @@ Entry point di QuantTradingSystem.
 
 Avvia un server FastAPI che espone:
     GET  /                    -> dashboard web (stato bot, segnali, backtest, log)
-    GET  /health              -> health check (usato da Render)
+    GET  /health              -> health check (usato dal deploy e da Docker)
+    GET  /config.js           -> indirizzo dell'API per la dashboard (vuoto: stesso server)
     GET  /api/status          -> stato del bot, ultimo segnale, account
     POST /api/bot/start       -> avvia il loop di trading        (protetto)
     POST /api/bot/stop        -> ferma il loop di trading        (protetto)
     POST /api/bot/run-once    -> esegue un singolo ciclo         (protetto)
     GET  /api/signals         -> storico dei segnali generati
     GET  /api/backtest        -> backtest della strategia con parametri custom
+    GET  /api/backtest/costs  -> stesso backtest con commissioni ×1/×2/×3 e slippage 0/5 bps
     GET  /api/logs            -> ultimi log applicativi
+    GET  /api/data-health     -> provenienza ed età dei dati (503 se mock di ripiego o vecchi)
     GET  /docs                -> documentazione OpenAPI interattiva (Swagger)
 
 Gli endpoint "protetti" richiedono l'header `X-API-Key` se la variabile
-d'ambiente CONTROL_API_KEY è impostata (fortemente consigliato su Render,
+d'ambiente CONTROL_API_KEY è impostata (fortemente consigliato in produzione,
 dato che il servizio è pubblicamente raggiungibile).
+
+La dashboard può stare anche su GitHub Pages: CORS_ORIGINS elenca le origini
+autorizzate a chiamare l'API dal browser.
 
 Avvio locale:
     uvicorn main:app --reload --port 10000
@@ -31,12 +37,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
-from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from config import settings
 from core.engine import TradingEngine
 from strategy.quant_model import MovingAverageCrossover, StrategyParams
-from utils.keep_alive import keep_alive_loop
+from strategy.metrics import bars_per_year, infer_market
 from utils.logger import get_logger, memory_handler, setup_logging
 
 __version__ = "1.0.0"
@@ -51,7 +58,7 @@ DASHBOARD_HTML = (Path(__file__).parent / "templates" / "dashboard.html").read_t
 # ------------------------------------------------------------- Lifecycle
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Avvio/arresto ordinato: il bot si ferma pulito quando Render riavvia."""
+    """Avvio/arresto ordinato: il bot si ferma pulito quando il container si riavvia."""
     logger.info(
         "Avvio %s v%s (env=%s, broker=%s, data=%s, symbol=%s, candele=%s)",
         settings.app_name, __version__, settings.environment,
@@ -62,18 +69,8 @@ async def lifespan(app: FastAPI):
     if settings.auto_start_bot:
         await engine.start()
 
-    keep_alive_task = None
-    if settings.keep_alive and settings.keep_alive_url:
-        keep_alive_task = asyncio.create_task(
-            keep_alive_loop(settings.keep_alive_url, settings.keep_alive_interval_seconds), name="keep-alive"
-        )
-    elif settings.keep_alive:
-        logger.info("Keep-alive non attivo: nessun URL pubblico (RENDER_EXTERNAL_URL/KEEP_ALIVE_URL).")
-
     yield
 
-    if keep_alive_task:
-        keep_alive_task.cancel()
     await engine.stop()
     logger.info("Shutdown completato.")
 
@@ -84,6 +81,34 @@ app = FastAPI(
     description="Sistema di trading quantitativo con dashboard di monitoraggio.",
     lifespan=lifespan,
 )
+
+# La dashboard pubblicata su GitHub Pages chiama l'API da un'altra origine.
+if settings.cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_methods=["GET", "POST"],
+        allow_headers=["X-API-Key"],
+    )
+
+
+async def run_job(job, what: str):
+    """
+    Esegue un calcolo bloccante in un thread e traduce gli errori in risposte HTTP.
+
+    ValueError (parametri o dati non validi) -> 422; ogni altra eccezione -> 502
+    con il nome dell'errore. Un 500 grezzo uscirebbe senza header CORS e la
+    dashboard su GitHub Pages vedrebbe solo "Failed to fetch".
+    """
+    try:
+        return await asyncio.to_thread(job)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # rete, Yahoo, bug: va comunque raccontato al client
+        logger.exception("%s non riuscito", what)
+        raise HTTPException(status_code=502, detail=f"{what} non riuscito: {type(exc).__name__}: {str(exc)[:200]}") from exc
 
 
 # ------------------------------------------------------------ Sicurezza
@@ -100,6 +125,12 @@ def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def dashboard() -> str:
     return DASHBOARD_HTML
+
+
+@app.get("/config.js", include_in_schema=False)
+async def dashboard_config() -> Response:
+    # Su GitHub Pages questo file imposta window.QTS_API; qui l'API è sullo stesso server.
+    return Response("// API sullo stesso server della dashboard\n", media_type="text/javascript")
 
 
 @app.get("/health", tags=["system"])
@@ -159,16 +190,73 @@ async def run_backtest(
 
     def _job() -> dict:
         data = engine.fetcher.get_ohlcv(symbol, period, "1d")
-        result = MovingAverageCrossover(params).backtest(data)
+        bpy = bars_per_year("1d", infer_market(symbol))
+        result = MovingAverageCrossover(params).backtest(data, bars_per_year=bpy)
         out = result.to_dict()
         out["symbol"] = symbol.upper()
         out["data_source"] = engine.fetcher.last_source_used
         return out
 
+    return await run_job(_job, "Backtest")
+
+
+@app.get("/api/backtest/costs", tags=["strategy"])
+async def backtest_costs(
+    symbol: str = Query(default=settings.symbol, min_length=1, max_length=20),
+    short_window: int = Query(default=settings.short_window, ge=1, le=400),
+    long_window: int = Query(default=settings.long_window, ge=2, le=500),
+    period: str = Query(default="2y", pattern=r"^(1mo|3mo|6mo|1y|2y|5y|10y|ytd|max)$"),
+    fee_bps: float = Query(default=settings.fee_bps, ge=0, le=500),
+) -> dict:
+    """Sensibilità ai costi: rendimento con commissioni ×1/×2/×3 e slippage 0 o 5 bps."""
+    from strategy.research import cost_sensitivity
+
     try:
-        return await asyncio.to_thread(_job)
+        params = StrategyParams(
+            short_window=short_window, long_window=long_window,
+            initial_capital=settings.initial_capital, fee_bps=fee_bps,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    def _job() -> dict:
+        data = engine.fetcher.get_ohlcv(symbol, period, "1d")
+        out = cost_sensitivity(MovingAverageCrossover(params), data,
+                               bars_per_year=bars_per_year("1d", infer_market(symbol)))
+        out["symbol"] = symbol.upper()
+        out["data_source"] = engine.fetcher.last_source_used
+        return out
+
+    return await run_job(_job, "Backtest dei costi")
+
+
+@app.get("/api/data-health", tags=["system"])
+async def data_health() -> JSONResponse:
+    """
+    Da dove arrivano i dati del bot e quanto sono recenti.
+
+    Risponde 503 quando il bot non invierebbe ordini: serie mock al posto di
+    Yahoo, nessun dato o ultima candela troppo vecchia. Il controllo dopo il
+    deploy può quindi usare `curl -f`.
+    """
+    from utils.data_fetcher import bar_age, max_bar_age, order_block_reason
+
+    def _job() -> dict:
+        _, info = engine.fetcher.get_ohlcv_with_info(
+            settings.symbol, settings.data_period, settings.data_interval
+        )
+        age = bar_age(info.last_bar)
+        blocked = order_block_reason(info)
+        return {
+            **info.to_dict(),
+            "age_seconds": round(age.total_seconds()) if age is not None else None,
+            "max_age_seconds": round(max_bar_age(info.interval).total_seconds()),
+            "orders_blocked": blocked,
+            "ok": blocked is None,
+        }
+
+    body = await run_job(_job, "Controllo dei dati")
+    return JSONResponse(body, status_code=200 if body["ok"] else 503)
 
 
 @app.get("/api/logs", tags=["system"])

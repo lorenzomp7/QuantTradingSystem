@@ -66,3 +66,9 @@ Thumbs.db
 # Claude Code: impostazioni personali e stato degli hook (non versionati)
 .claude/settings.local.json
 .claude/hooks/.state/
+
+# APK di terzi e risultati completi di REA (integrazione 7): restano fuori dalla repo
+*.apk
+*.apks
+*.xapk
+qts-apk/

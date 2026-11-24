@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main, main_claude]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -26,3 +27,48 @@ jobs:
           cache-dependency-path: requirements*.txt
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m pytest -q
+
+  # Prova della dashboard in un browser vero (tools/smoke_dashboard.sh).
+  # Facoltativa: se fallisce lo segnala, ma non blocca pytest.
+  smoke-dashboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: python -m pip install -r requirements-dev.txt
+      # Il runner ha già Chrome e le librerie: niente --with-deps (scarica font via apt per minuti).
+      - run: npm i -g agent-browser@0.44.0 && agent-browser install
+        timeout-minutes: 5
+      - run: bash tools/smoke_dashboard.sh
+        timeout-minutes: 5
+        env:
+          OUT_DIR: ${{ runner.temp }}/qts-smoke
+      # Come su GitHub Pages: pagina e API su origini diverse (CORS, config.js).
+      - run: bash tools/smoke_dashboard.sh
+        timeout-minutes: 5
+        env:
+          PAGES: "1"
+          OUT_DIR: ${{ runner.temp }}/qts-smoke-pages
+      # GitHub Pages senza VM: stato dai file del bot, backtest nel browser con Pyodide (dal CDN).
+      - run: bash tools/smoke_static.sh
+        timeout-minutes: 8
+        env:
+          OUT_DIR: ${{ runner.temp }}/qts-smoke-static
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dashboard-screenshots
+          path: |
+            ${{ runner.temp }}/qts-smoke
+            ${{ runner.temp }}/qts-smoke-pages
+            ${{ runner.temp }}/qts-smoke-static/*.png
+          if-no-files-found: ignore

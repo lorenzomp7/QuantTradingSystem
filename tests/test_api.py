@@ -1,3 +1,6 @@
+from pathlib import Path
+
+import pytest
 from fastapi.testclient import TestClient
 
 import main
@@ -64,3 +67,64 @@ def test_buy_sizing_works_with_expensive_asset():
     assert 0 < qty < 0.1
     eng.broker.submit_order("BTC-USD", "BUY", qty, 100_000.0)
     assert eng.broker.get_account()["cash"] >= 0
+
+
+def test_backtest_endpoint_annualizes_by_market():
+    # BTC è aperto 24/7: 365 barre giornaliere l'anno; SPY segue la borsa: 252.
+    with TestClient(main.app) as client:
+        btc = client.get("/api/backtest", params={"symbol": "BTC-USD"}).json()["metrics"]
+        spy = client.get("/api/backtest", params={"symbol": "SPY"}).json()["metrics"]
+        assert btc["bars_per_year"] == 365
+        assert spy["bars_per_year"] == 252
+
+
+def test_dashboard_on_github_pages_can_call_the_api():
+    """La dashboard su GitHub Pages è su un'altra origine: servono CORS e il preflight per X-API-Key."""
+    pages = main.settings.cors_origins[0]   # da config: non dipende da un .env locale
+    with TestClient(main.app) as client:
+        r = client.get("/api/status", headers={"Origin": pages})
+        assert r.headers["access-control-allow-origin"] == pages
+        pre = client.options("/api/bot/start", headers={
+            "Origin": pages, "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "x-api-key"})
+        assert pre.status_code == 200
+        assert "x-api-key" in pre.headers["access-control-allow-headers"].lower()
+        other = client.get("/api/status", headers={"Origin": "https://example.com"})
+        assert "access-control-allow-origin" not in other.headers
+        cfg = client.get("/config.js")
+        assert cfg.status_code == 200 and "javascript" in cfg.headers["content-type"]
+        assert "QTS_API" not in cfg.text
+
+
+def test_dashboard_calls_go_through_the_api_address():
+    # Su GitHub Pages un percorso relativo ("/api/...") andrebbe a github.io, non alla VM.
+    import re
+
+    html = (Path(main.__file__).parent / "templates" / "dashboard.html").read_text(encoding="utf-8")
+    calls = re.findall(r"fetch\(\s*([^,)]+)", html)
+    assert calls, "nessuna chiamata fetch trovata"
+    # L'unica eccezione è siteFile(): file del sito statico (stato del bot, moduli Python, snapshot).
+    for arg in calls:
+        assert arg.strip().startswith(("API_BASE", "`${API_BASE}", "new URL(name")), \
+            f"fetch senza l'indirizzo dell'API: {arg}"
+    assert html.count("new URL(name, document.baseURI") == 1
+    # Pyodide tratta una globale `API` come il proprio runtime e non si avvia: va evitata.
+    assert not re.search(r"\b(const|let|var)\s+API\b", html)
+    for name in re.findall(r"siteFile\(\s*([^)]+)\)", html):
+        assert name.strip().startswith(('"state/', '"py/', '"data/', "name")), f"file del sito inatteso: {name}"
+
+
+@pytest.mark.parametrize("path", ["/api/backtest", "/api/backtest/costs", "/api/data-health"])
+def test_unexpected_errors_return_502_with_cors(monkeypatch, path):
+    # Su GitHub Pages un 500 senza header CORS arriva al browser solo come "Failed to fetch".
+    def boom(*_a, **_k):
+        raise RuntimeError("guasto inatteso")
+
+    monkeypatch.setattr(main.engine.fetcher, "get_ohlcv", boom)
+    monkeypatch.setattr(main.engine.fetcher, "get_ohlcv_with_info", boom)
+    origin = main.settings.cors_origins[0]
+    with TestClient(main.app, raise_server_exceptions=False) as client:
+        r = client.get(path, headers={"Origin": origin})
+        assert r.status_code == 502
+        assert r.headers["access-control-allow-origin"] == origin
+        assert "RuntimeError" in r.json()["detail"]

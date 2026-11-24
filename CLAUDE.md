@@ -27,7 +27,7 @@ AGENTS.md (importato sopra) vale per tutti gli agenti; qui solo ciò che riguard
 ### Skill
 
 - Di progetto: `strategy-change`, da usare per ogni modifica a strategie, backtest o metriche.
-- Generali, da `addyosmani/agent-skills` (versione fissata, fonte in `.claude/references/README.md`): pianificazione (`planning-and-task-breakdown`), piccoli passi (`incremental-implementation`), test prima del codice (`test-driven-development`), revisione (`code-review-and-quality`), debug (`debugging-and-error-recovery`).
+- Generali, da `addyosmani/agent-skills` (versione fissata, fonte in `.claude/references/README.md`): pianificazione (`planning-and-task-breakdown`), piccoli passi (`incremental-implementation`), test prima del codice (`test-driven-development`), revisione (`code-review-and-quality`), debug (`debugging-and-error-recovery`), sicurezza (`security-and-hardening`), osservabilità (`observability-and-instrumentation`).
 
 ### Subagenti
 

@@ -1,0 +1,31 @@
+# Bot di trading + API sulla VM Oracle. Caddy (deploy/bootstrap.sh) espone l'API in HTTPS
+# raggiungendo il container "quant-trading-system" sulla rete Docker condivisa "web".
+# Il broker resta "paper" (simulato): nessun ordine reale.
+services:
+  app:
+    build: ..
+    container_name: quant-trading-system
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: production
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CONTROL_API_KEY: ${CONTROL_API_KEY:?manca il secret CONTROL_API_KEY}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://lorenzomp7.github.io}
+      DATA_SOURCE: ${DATA_SOURCE:-yahoo}
+      SYMBOL: ${SYMBOL:-BTC-USD}
+      DATA_PERIOD: ${DATA_PERIOD:-5d}
+      DATA_INTERVAL: ${DATA_INTERVAL:-5m}
+      SHORT_WINDOW: ${SHORT_WINDOW:-20}
+      LONG_WINDOW: ${LONG_WINDOW:-50}
+      INITIAL_CAPITAL: ${INITIAL_CAPITAL:-10000}
+      FEE_BPS: ${FEE_BPS:-5}
+      POSITION_SIZE_PCT: ${POSITION_SIZE_PCT:-100}
+      TRADE_QUANTITY: ${TRADE_QUANTITY:-0}
+      LOOP_INTERVAL_SECONDS: ${LOOP_INTERVAL_SECONDS:-60}
+      AUTO_START_BOT: ${AUTO_START_BOT:-true}
+      BROKER: paper
+    mem_limit: 1g
+    networks: [web]
+networks:
+  web:
+    external: true
