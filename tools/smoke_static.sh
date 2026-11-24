@@ -110,6 +110,8 @@ u = json.loads(sys.argv[1])
 assert u["badge"] == "ATTIVO", u["badge"]
 assert u["controls"] and u["key"] and u["link"], u
 assert u["logs"] and u["logs"] not in ("Nessun log", "Caricamento…"), u["logs"]
+lines = u["logs"].splitlines()
+assert lines[0][:19] >= lines[-1][:19], "i log devono mostrare prima i più recenti, come con la VM"
 EOF
   ok "[$W×$H] stato e log dai file del bot, controlli sostituiti dal link a GitHub Actions"
 
@@ -157,6 +159,18 @@ print(len([m for m in msgs if m.get("type") == "error"]))')"
   ab screenshot "$OUT_DIR/static-${W}x${H}.png" >/dev/null
   ok "[$W×$H] pagina senza errori, screenshot in $OUT_DIR/static-${W}x${H}.png"
 done
+
+# Stato vecchio (esecuzioni pianificate saltate o sospese): il badge non deve dire ATTIVO.
+python3 - "$SITE/state/status.json" <<'EOF'
+import json, sys
+from datetime import datetime, timedelta, timezone
+p = sys.argv[1]; s = json.load(open(p))
+s["written_at"] = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
+json.dump(s, open(p, "w"))
+EOF
+js 'refresh().then(() => document.getElementById("badge").textContent)' >"$OUT_DIR/badge.txt"
+grep -q "IN RITARDO" "$OUT_DIR/badge.txt" || fail "stato di 5 ore fa: badge $(cat "$OUT_DIR/badge.txt"), atteso IN RITARDO"
+ok "stato vecchio di 5 ore: badge IN RITARDO"
 
 # Parametri sbagliati: l'errore di validazione arriva dal Python nel browser, come il 422 dell'API.
 ab fill '#bt-short' '60' >/dev/null

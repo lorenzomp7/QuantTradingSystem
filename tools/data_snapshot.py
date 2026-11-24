@@ -5,11 +5,16 @@ Snapshot dei prezzi giornalieri per la dashboard su GitHub Pages.
 
     python -m tools.data_snapshot --out state/data --symbols SPY,QQQ,BTC-USD
 
-Scarica 10 anni di candele giornaliere da Yahoo per ogni simbolo e scrive
+Scarica tutta la storia di candele giornaliere da Yahoo (`max`, come il periodo
+"max" di /api/backtest) per ogni simbolo e scrive
 `<SIMBOLO>.csv` più `index.json` (righe, prima e ultima data, esito). Se Yahoo
 non risponde per un simbolo, il file precedente resta com'è e `index.json`
 lo segnala: la dashboard mostra la data dell'ultimo aggiornamento riuscito.
 Esce con 1 se almeno un simbolo non si è aggiornato.
+
+Con `--if-older-than ORE` scarica solo i simboli il cui ultimo aggiornamento riuscito
+è più vecchio di ORE; un simbolo fallito si riprova dopo RETRY_AFTER_HOURS, per non
+interrogare Yahoo a ogni esecuzione (è la stessa fonte del bot).
 """
 
 from __future__ import annotations
@@ -30,24 +35,26 @@ from utils import data_fetcher  # noqa: E402
 from web.static_api import snapshot_name  # noqa: E402
 
 DEFAULT_SYMBOLS = "SPY,QQQ,AAPL,MSFT,BTC-USD,ETH-USD"
-PERIOD = "10y"
+PERIOD = "max"
+RETRY_AFTER_HOURS = 3.0
 
 
 def file_name(symbol: str) -> str:
     return snapshot_name(symbol)
 
 
-def _fresh(index: dict, symbols: list[str], hours: float) -> bool:
-    """True se ogni simbolo ha un aggiornamento riuscito più recente di `hours` ore."""
-    limit = datetime.now(timezone.utc) - timedelta(hours=hours)
-    for symbol in symbols:
-        entry = index.get("symbols", {}).get(symbol) or {}
+def _due(entry: dict, hours: float, now: datetime) -> bool:
+    """True se il simbolo va scaricato: mai riuscito, più vecchio di `hours`, o fallito da tempo."""
+    def ts(key: str) -> datetime | None:
         try:
-            if not entry.get("ok") or datetime.fromisoformat(entry["updated_at"]) < limit:
-                return False
+            return datetime.fromisoformat(entry[key])
         except (KeyError, ValueError, TypeError):
-            return False
-    return True
+            return None
+    failed_at = ts("failed_at")
+    if not entry.get("ok") and failed_at and now - failed_at < timedelta(hours=RETRY_AFTER_HOURS):
+        return False                                    # fallito da poco: si aspetta
+    updated_at = ts("updated_at")
+    return not entry.get("ok") or updated_at is None or now - updated_at >= timedelta(hours=hours)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -65,14 +72,23 @@ def main(argv: list[str] | None = None) -> int:
     except (FileNotFoundError, json.JSONDecodeError):
         index = {"symbols": {}}
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
-    if args.if_older_than is not None and _fresh(index, symbols, args.if_older_than):
-        print(f"Snapshot aggiornati da meno di {args.if_older_than:g} ore: niente da fare.")
-        return 0
-    now = datetime.now(timezone.utc).isoformat()
+    now_dt = datetime.now(timezone.utc)
+    if args.if_older_than is not None:
+        skipped = [x for x in symbols if not _due(index["symbols"].get(x, {}), args.if_older_than, now_dt)]
+        if skipped:
+            print(f"Non da aggiornare ora: {', '.join(skipped)}")
+        symbols = [x for x in symbols if x not in skipped]
+    now = now_dt.isoformat()
     code = 0
     for symbol in symbols:
-        path = args.out / file_name(symbol)
         entry = index["symbols"].get(symbol, {})
+        try:
+            path = args.out / file_name(symbol)
+        except ValueError as exc:              # simbolo non valido: si segnala e si va avanti
+            code = 1
+            index["symbols"][symbol] = {"ok": False, "error": str(exc), "failed_at": now}
+            print(f"{symbol}: {exc}", file=sys.stderr)
+            continue
         try:
             frame = data_fetcher.fetch_yahoo(symbol, PERIOD, "1d")
             frame.index.name = "date"

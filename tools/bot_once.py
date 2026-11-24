@@ -64,10 +64,31 @@ def run(state_dir: Path, enabled: bool) -> int:
     handler = InMemoryLogHandler(capacity=MAX_LOGS)
     logging.getLogger().addHandler(handler)
 
-    prev = _read_json(state_dir / "status.json", {})
-    broker_state = _read_json(state_dir / "broker.json", None)
-    broker = (PaperBroker.from_state(broker_state) if broker_state
-              else PaperBroker(initial_cash=cfg.initial_capital, fee_bps=cfg.fee_bps))
+    try:
+        prev = _read_json(state_dir / "status.json", {})
+        broker_state = _read_json(state_dir / "broker.json", None)
+        broker = (PaperBroker.from_state(broker_state) if broker_state
+                  else PaperBroker(initial_cash=cfg.initial_capital, fee_bps=cfg.fee_bps))
+    except Exception as exc:  # JSON illeggibile, registro alterato o incoerente
+        # Il conto non si tocca (niente ripartenza da zero): l'errore va sulla pagina e la run fallisce.
+        error = f"Stato salvato non valido, ciclo non eseguito: {type(exc).__name__}: {exc}"
+        logger.error(error)
+        logging.getLogger().removeHandler(handler)
+        try:
+            prev = json.loads((state_dir / "status.json").read_text(encoding="utf-8"))
+            assert isinstance(prev, dict)
+        except Exception:
+            prev = {}
+        prev.update({"mode": "github-actions", "running": False, "last_error": error,
+                     "written_at": datetime.now(timezone.utc).isoformat()})
+        _write_json(state_dir / "status.json", prev)
+        try:
+            logs = _read_json(state_dir / "logs.json", [])
+            assert isinstance(logs, list)
+        except Exception:
+            logs = []
+        _write_json(state_dir / "logs.json", (logs + handler.get_logs(limit=MAX_LOGS))[-MAX_LOGS:])
+        return 1
     engine = TradingEngine(cfg, broker=broker)
     engine.cycles = int(prev.get("cycles", 0))
     engine.started_at = prev.get("started_at") or datetime.now(timezone.utc).isoformat()
@@ -104,7 +125,9 @@ def run(state_dir: Path, enabled: bool) -> int:
     logs = _read_json(state_dir / "logs.json", []) + handler.get_logs(limit=MAX_LOGS)
     _write_json(state_dir / "logs.json", logs[-MAX_LOGS:])
 
-    if enabled and not error:
+    # Una riga per ciclo riuscito su dati veri: con la serie mock di ripiego il prezzo è finto.
+    fallback = bool(engine.last_data_info and engine.last_data_info.fallback)
+    if enabled and not error and not fallback:
         acct, sig = status["account"], status["last_signal"] or {}
         equity_csv = state_dir / "equity.csv"
         new = not equity_csv.exists()

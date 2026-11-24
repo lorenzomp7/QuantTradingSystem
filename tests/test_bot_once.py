@@ -36,6 +36,22 @@ def test_from_state_rejects_inconsistent_ledger():
         PaperBroker.from_state(state)
 
 
+@pytest.mark.parametrize("change", [
+    lambda st: st.update(version=2),
+    lambda st: st["orders"][0].update(quantity=-1),                    # coerente ma senza senso
+    lambda st: st["orders"][0].update(side="HOLD"),
+    lambda st: st["last_prices"].update(X=-5),
+])
+def test_from_state_rejects_invalid_values(change):
+    b = PaperBroker(initial_cash=1_000, fee_bps=0)
+    b.submit_order("X", "BUY", 1, 100)
+    b.mark_price("X", 101)
+    state = json.loads(json.dumps(b.to_state()))
+    change(state)
+    with pytest.raises(ValueError):
+        PaperBroker.from_state(state)
+
+
 # ------------------------------------------------------ Ciclo singolo
 @pytest.fixture
 def env(monkeypatch, tmp_path):
@@ -104,3 +120,46 @@ def test_cycle_error_exits_1_but_saves_state(env, monkeypatch):
     assert bot_once.main(["--state-dir", str(env)]) == 1
     status = json.loads((env / "status.json").read_text())
     assert "guasto" in status["last_error"] and status["cycles"] == 1
+
+
+def _open_position(env, qty=0.1, price=60_000.0):
+    env.mkdir(parents=True, exist_ok=True)
+    b = PaperBroker(initial_cash=10_000, fee_bps=5)
+    b.submit_order("BTC-USD", "BUY", qty, price)
+    b.mark_price("BTC-USD", price)
+    (env / "broker.json").write_text(json.dumps(b.to_state()))
+    return b.get_account()
+
+
+def test_fallback_does_not_mark_the_account_at_mock_prices(env, monkeypatch):
+    # Con Yahoo giù il prezzo è quello della serie mock (~100): il conto non deve cambiare valore.
+    before = _open_position(env)
+    monkeypatch.setenv("DATA_SOURCE", "yahoo")
+    monkeypatch.setattr(df_mod, "fetch_yahoo", lambda *a, **k: (_ for _ in ()).throw(df_mod.DataFetchError("no")))
+    assert bot_once.main(["--state-dir", str(env)]) == 0
+    broker = json.loads((env / "broker.json").read_text())
+    assert broker["last_prices"] == {"BTC-USD": 60_000.0}
+    status = json.loads((env / "status.json").read_text())
+    assert status["account"]["equity"] == before["equity"]
+    assert not (env / "equity.csv").exists()          # nessuna riga con un prezzo finto
+
+
+@pytest.mark.parametrize("damage", ["tamper", "status", "broker"])
+def test_corrupted_state_is_reported_and_not_reset(env, damage):
+    assert bot_once.main(["--state-dir", str(env)]) == 0
+    broker_before = (env / "broker.json").read_text()
+    if damage == "tamper":
+        st = json.loads(broker_before); st["cash"] += 100
+        (env / "broker.json").write_text(json.dumps(st))
+        broker_before = (env / "broker.json").read_text()
+    elif damage == "status":
+        (env / "status.json").write_text("{non è json")
+    else:
+        (env / "broker.json").write_text("{rotto")
+        broker_before = "{rotto"
+    assert bot_once.main(["--state-dir", str(env)]) == 1
+    assert (env / "broker.json").read_text() == broker_before    # il conto non riparte da zero
+    status = json.loads((env / "status.json").read_text())
+    assert "Stato salvato non valido" in status["last_error"] and status["running"] is False
+    logs = json.loads((env / "logs.json").read_text())
+    assert any("Stato salvato non valido" in l["message"] for l in logs)

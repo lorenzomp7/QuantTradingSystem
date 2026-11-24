@@ -251,7 +251,7 @@ Costo: 0 € (repo pubblico: minuti di Actions e Pages gratuiti).
 - **Dashboard** → <https://lorenzomp7.github.io/QuantTradingSystem/>: stato e log dai file del
   bot; backtest e tabella dei costi calcolati nel browser con [Pyodide](https://pyodide.org)
   dallo stesso codice Python dell'API, sui prezzi giornalieri di Yahoo aggiornati una volta al
-  giorno (`tools/data_snapshot.py`, 10 anni per SPY, QQQ, AAPL, MSFT, BTC-USD, ETH-USD). La prima
+  giorno (`tools/data_snapshot.py`, tutta la storia per SPY, QQQ, AAPL, MSFT, BTC-USD, ETH-USD). La prima
   apertura scarica circa 20 MB (Python, NumPy, pandas), poi il browser li tiene in cache.
 
 Attivazione, una volta sola:
@@ -270,6 +270,11 @@ Limiti rispetto alla VM: un ciclo all'ora invece che al minuto, e GitHub può ri
 un'esecuzione pianificata; dopo 60 giorni senza commit sul repo GitHub sospende le esecuzioni
 pianificate (si riattivano da Actions). Niente pulsanti Avvia/Ferma: si usa `BOT_ENABLED` o
 *Run workflow*. Per ripartire con un conto nuovo cancella il branch `bot-state`.
+Avvisi: un ciclo fallito rende rossa l'esecuzione (GitHub manda la notifica), gli ordini sospesi
+per dati mock o vecchi compaiono come avviso nella run, e la pagina mostra «IN RITARDO» se lo
+stato ha più di 3 ore. Uno stato salvato illeggibile o alterato non viene mai sostituito da un
+conto nuovo: il ciclo si ferma con l'errore in pagina. Solo `main` aggiorna il conto: *Run
+workflow* da un altro branch ricostruisce la pagina senza toccare `bot-state`.
 Prova in locale: `PYODIDE_DIR=… bash tools/smoke_static.sh` (vedi l'intestazione dello script).
 
 ### 2b. Deploy gratuito con VM: GitHub Pages + VM Oracle

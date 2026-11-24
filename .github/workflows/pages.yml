@@ -8,6 +8,9 @@
 #   giorno (tools/data_snapshot.py) e la pagina calcola backtest e costi nel browser con Pyodide.
 #   Variabili facoltative: BOT_ENABLED (false = cicli saltati), BOT_SYMBOL (BTC-USD),
 #   SNAPSHOT_SYMBOLS (SPY,QQQ,AAPL,MSFT,BTC-USD,ETH-USD).
+#
+# Permessi: il job che installa ed esegue Python (build) può solo leggere; il push di
+# bot-state lo fa un job separato (save-state) che non esegue codice del progetto.
 name: GitHub Pages
 
 on:
@@ -39,14 +42,18 @@ jobs:
     if: github.event_name != 'schedule' || (vars.VM_HOST == '' && vars.API_HOST == '')
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    permissions:
-      contents: write   # solo per il branch bot-state (modalità senza VM)
     env:
       STATIC: ${{ vars.VM_HOST == '' && vars.API_HOST == '' }}
+      # Il conto si aggiorna solo dal codice di main (Run workflow da un altro branch non lo tocca).
+      ON_MAIN: ${{ github.ref == 'refs/heads/main' }}
     outputs:
       bot: ${{ steps.bot.outcome }}
+      state_sha: ${{ steps.restore.outputs.sha }}
+      save: ${{ steps.restore.outcome == 'success' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # ---------------------------------------------------------- con VM
       - name: Sito collegato all'API sulla VM
@@ -58,6 +65,7 @@ jobs:
           mkdir _site
           cp templates/dashboard.html _site/index.html
           if [ -z "$API_HOST" ]; then API_HOST="quant.${VM_HOST//./-}.sslip.io"; fi
+          [[ "$API_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "::error::API_HOST/VM_HOST non validi: $API_HOST"; exit 1; }
           printf 'window.QTS_API = "https://%s";\n' "$API_HOST" > _site/config.js
           cat _site/config.js
 
@@ -72,6 +80,7 @@ jobs:
         if: env.STATIC == 'true'
         run: python -m pip install -r requirements.txt
       - name: Stato precedente (branch bot-state)
+        id: restore
         if: env.STATIC == 'true'
         run: |
           mkdir state
@@ -80,18 +89,20 @@ jobs:
           rc=0; git ls-remote --exit-code --heads origin bot-state >/dev/null || rc=$?
           if [ "$rc" = 0 ]; then
             git fetch -q --depth=1 origin bot-state
+            echo "sha=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
             git --work-tree=state checkout FETCH_HEAD -- .
             git reset -q
           elif [ "$rc" = 2 ]; then
             echo "Branch bot-state assente: primo avvio, si parte da un conto paper nuovo."
+            echo "sha=" >> "$GITHUB_OUTPUT"
           else
             echo "::error::Impossibile leggere il branch bot-state (git ls-remote: $rc)"; exit 1
           fi
           ls -la state
       - name: Ciclo del bot (paper)
         id: bot
-        if: env.STATIC == 'true' && github.event_name != 'push'
-        continue-on-error: true   # lo stato si salva comunque; il job fallisce alla fine
+        if: env.STATIC == 'true' && env.ON_MAIN == 'true' && github.event_name != 'push'
+        continue-on-error: true   # lo stato si salva comunque; la run diventa rossa alla fine
         env:
           BOT_ENABLED: ${{ vars.BOT_ENABLED || 'true' }}
           SYMBOL: ${{ vars.BOT_SYMBOL || 'BTC-USD' }}
@@ -102,17 +113,62 @@ jobs:
           BOT_SCHEDULE: ogni ora (GitHub Actions)
           LOG_LEVEL: INFO
         run: python -m tools.bot_once --state-dir state
+      - name: Ordini sospesi?
+        if: env.STATIC == 'true' && steps.bot.outcome == 'success'
+        run: |
+          python - <<'EOF'
+          import json
+          s = json.load(open("state/status.json"))
+          reason = (s.get("data") or {}).get("orders_blocked")
+          if reason:
+              print(f"::warning::Ordini sospesi in questo ciclo: {reason}")
+          EOF
       - name: Prezzi giornalieri per il backtest
         id: snapshot
         if: env.STATIC == 'true'
         continue-on-error: true   # se Yahoo non risponde restano gli ultimi file
-        run: |
-          python -m tools.data_snapshot --out state/data --if-older-than 20 \
-            --symbols "${{ vars.SNAPSHOT_SYMBOLS || 'SPY,QQQ,AAPL,MSFT,BTC-USD,ETH-USD' }}"
-      - name: Salva lo stato nel branch bot-state
+        env:
+          SNAPSHOT_SYMBOLS: ${{ vars.SNAPSHOT_SYMBOLS || 'SPY,QQQ,AAPL,MSFT,BTC-USD,ETH-USD' }}
+        run: python -m tools.data_snapshot --out state/data --if-older-than 20 --symbols "$SNAPSHOT_SYMBOLS"
+      - name: Prezzi non aggiornati
+        if: steps.snapshot.outcome == 'failure'
+        run: echo "::warning::Yahoo non ha risposto per alcuni simboli; il backtest usa gli ultimi prezzi salvati (data/index.json)."
+      - uses: actions/upload-artifact@v4
+        if: env.STATIC == 'true' && env.ON_MAIN == 'true'
+        with:
+          name: bot-state
+          path: state/
+          retention-days: 1
+          if-no-files-found: ignore
+      - name: Sito statico
         if: env.STATIC == 'true'
+        run: |
+          python -m tools.build_static_site --out _site --state state --data state/data \
+            --actions-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/pages.yml"
+          cat _site/config.js
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  # Unico job con permesso di scrittura: niente checkout né codice del progetto, solo git.
+  save-state:
+    needs: build
+    if: needs.build.outputs.save == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: bot-state
+          path: state
+      - name: Salva lo stato nel branch bot-state
         env:
           GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ needs.build.outputs.state_sha }}
         run: |
           cd state
           git init -q -b bot-state
@@ -127,22 +183,11 @@ jobs:
           Per ripartire da zero cancella il branch.
           EOF
           git add -A
-          git commit -q -m "Stato del bot ($(date -u +%Y-%m-%dT%H:%MZ), run ${{ github.run_id }})"
-          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" bot-state
-      - name: Sito statico
-        if: env.STATIC == 'true'
-        run: |
-          python -m tools.build_static_site --out _site --state state --data state/data \
-            --actions-url "${{ github.server_url }}/${{ github.repository }}/actions/workflows/pages.yml"
-          cat _site/config.js
-
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: _site
-      - name: Prezzi non aggiornati
-        if: steps.snapshot.outcome == 'failure'
-        run: echo "::warning::Yahoo non ha risposto per alcuni simboli; il backtest usa gli ultimi prezzi salvati (data/index.json)."
+          git commit -q -m "Stato del bot ($(date -u +%Y-%m-%dT%H:%MZ), run $GITHUB_RUN_ID)"
+          # Riscrive il branch solo se è ancora quello letto all'inizio (vuoto = deve non esistere):
+          # due esecuzioni sovrapposte falliscono invece di cancellarsi a vicenda.
+          git push -q --force-with-lease="bot-state:$BASE_SHA" \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" bot-state
 
   deploy:
     needs: build

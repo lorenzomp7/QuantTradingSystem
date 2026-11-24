@@ -131,7 +131,9 @@ class TradingEngine:
             signal["signal_bar_close"] = signal["close"]
             signal["close"] = round(price, 4)
 
-            if isinstance(self.broker, PaperBroker):
+            # Il conto si valorizza solo a prezzi veri: con la serie mock di ripiego
+            # l'equity salterebbe (BTC a ~100 invece che a decine di migliaia).
+            if isinstance(self.broker, PaperBroker) and not info.fallback:
                 self.broker.mark_price(self.symbol, price)
 
             position = self.broker.get_position(self.symbol)

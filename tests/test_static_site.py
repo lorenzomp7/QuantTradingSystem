@@ -1,6 +1,7 @@
 """Sito statico per GitHub Pages: snapshot dei dati, API in Pyodide, costruzione del sito."""
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
@@ -44,30 +45,49 @@ def test_snapshot_keeps_old_file_when_yahoo_fails(tmp_path, monkeypatch):
     assert entry["ok"] is False and "bloccato" in entry["error"] and entry["rows"] > 200
 
 
-def test_snapshot_skips_when_fresh_and_retries_after_a_failure(tmp_path, monkeypatch):
+def test_snapshot_refreshes_only_what_is_due(tmp_path, monkeypatch):
     calls = []
+    fail = set()
 
     def fake(s, p, i):
         calls.append(s)
+        if s in fail:
+            raise df_mod.DataFetchError("bloccato")
         return generate_mock_ohlcv(s, "1y", i)
 
     monkeypatch.setattr(df_mod, "fetch_yahoo", fake)
-    args = ["--out", str(tmp_path), "--symbols", "SPY,QQQ", "--if-older-than", "20"]
-    assert data_snapshot.main(args) == 0 and calls == ["SPY", "QQQ"]
-    assert data_snapshot.main(args) == 0 and calls == ["SPY", "QQQ"]          # recenti: niente rete
-    # Un simbolo nuovo o un aggiornamento fallito fanno ripartire il giro.
-    assert data_snapshot.main(args[:3] + ["SPY,QQQ,AAPL"] + args[4:]) == 0 and len(calls) == 5
     index_path = tmp_path / "index.json"
-    index = json.loads(index_path.read_text())
-    index["symbols"]["SPY"]["ok"] = False
-    index_path.write_text(json.dumps(index))
-    assert data_snapshot.main(args) == 0 and len(calls) == 7
-    # Più vecchi della soglia: si aggiornano.
-    index = json.loads(index_path.read_text())
-    for e in index["symbols"].values():
-        e["updated_at"] = "2020-01-01T00:00:00+00:00"
-    index_path.write_text(json.dumps(index))
-    assert data_snapshot.main(args) == 0 and len(calls) == 9
+
+    def run(symbols="SPY,QQQ"):
+        calls.clear()
+        code = data_snapshot.main(["--out", str(tmp_path), "--symbols", symbols, "--if-older-than", "20"])
+        return code, list(calls)
+
+    def age(symbol, key, hours):
+        index = json.loads(index_path.read_text())
+        index["symbols"][symbol][key] = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        index_path.write_text(json.dumps(index))
+
+    assert run() == (0, ["SPY", "QQQ"])
+    assert run() == (0, [])                                   # recenti: niente rete
+    assert run("SPY,QQQ,AAPL") == (0, ["AAPL"])                # solo il simbolo nuovo
+    age("QQQ", "updated_at", 30)
+    assert run() == (0, ["QQQ"])                              # solo quello scaduto
+    fail.add("SPY"); age("SPY", "updated_at", 30)
+    assert run() == (1, ["SPY"])                              # fallisce, il file resta
+    assert run() == (0, [])                                   # appena fallito: si aspetta
+    age("SPY", "failed_at", data_snapshot.RETRY_AFTER_HOURS + 1)
+    fail.clear()
+    assert run() == (0, ["SPY"])                              # riprova dopo la pausa
+    assert json.loads(index_path.read_text())["symbols"]["SPY"]["ok"] is True
+
+
+def test_snapshot_bad_symbol_does_not_stop_the_others(tmp_path, monkeypatch):
+    monkeypatch.setattr(df_mod, "fetch_yahoo", lambda s, p, i: generate_mock_ohlcv(s, "1y", i))
+    assert data_snapshot.main(["--out", str(tmp_path), "--symbols", "SPY,../X,QQQ"]) == 1
+    index = json.loads((tmp_path / "index.json").read_text())
+    assert index["symbols"]["SPY"]["ok"] and index["symbols"]["QQQ"]["ok"]
+    assert index["symbols"]["../X"]["ok"] is False
 
 
 @pytest.mark.parametrize("bad", ["../x", "a/b", "", "SPY;rm"])

@@ -154,7 +154,8 @@ async function staticGet(path, q) {
   if (path === "/api/logs") {
     const r = await siteFile("state/logs.json");
     const logs = r.ok ? await r.json() : [];
-    return { ok: true, status: 200, body: logs.slice(-Number(q.get("limit") || 100)).reverse() };
+    // In ordine cronologico, come /api/logs (refresh() li inverte per mostrare prima i più recenti).
+    return { ok: true, status: 200, body: logs.slice(-Number(q.get("limit") || 100)) };
   }
   const fn = { "/api/backtest": "backtest", "/api/backtest/costs": "costs" }[path];
   if (!fn) return { ok: false, status: 404, body: { detail: `${path} non disponibile senza server` } };
@@ -195,8 +196,12 @@ async function refresh() {
       $("account").innerHTML = ""; $("logs").textContent = "Nessun log";
       return;
     }
-    $("badge").textContent = s.running ? (STATIC ? "ATTIVO" : "RUNNING") : "STOPPED";
-    $("badge").className = "badge " + (s.running ? "on" : "off");
+    // Senza server lo stato è quello dell'ultima esecuzione: se è vecchio (cron saltato o
+    // sospeso da GitHub, errori ripetuti) la pagina non deve dire "ATTIVO".
+    const ageH = s.written_at ? (Date.now() - Date.parse(s.written_at)) / 3.6e6 : 0;
+    const late = s.mode === "github-actions" && s.running && ageH > 3;
+    $("badge").textContent = late ? "IN RITARDO" : s.running ? (STATIC ? "ATTIVO" : "RUNNING") : "STOPPED";
+    $("badge").className = "badge " + (s.running && !late ? "on" : "off");
     const sig = s.last_signal || {};
     $("status").innerHTML = kv({
       Simbolo: s.symbol, Strategia: s.strategy,

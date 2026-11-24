@@ -171,6 +171,8 @@ class PaperBroker(BaseBroker):
         """
         from execution.reconcile import reconcile_broker
 
+        if state.get("version") != 1:
+            raise ValueError(f"Versione dello stato del broker non supportata: {state.get('version')!r}")
         b = cls(initial_cash=float(state["initial_cash"]), fee_bps=float(state["fee_bps"]))
         b.cash = float(state["cash"])
         b.positions = {k: float(v) for k, v in state.get("positions", {}).items()}
@@ -178,6 +180,18 @@ class PaperBroker(BaseBroker):
         b.orders = [Order(**o) for o in state.get("orders", [])]
         b.rejected_orders.extend(Order(**o) for o in state.get("rejected_orders", []))
         b.rejected_count = int(state.get("rejected_count", len(b.rejected_orders)))
+        # La riconciliazione controlla che i conti tornino, non che abbiano senso:
+        # un registro coerente ma con quantità o cassa negative va rifiutato prima.
+        issues = []
+        if b.initial_cash <= 0 or b.cash < 0:
+            issues.append(f"cassa negativa o capitale iniziale non positivo (cash={b.cash})")
+        issues += [f"posizione negativa su {k}: {q}" for k, q in b.positions.items() if q < 0]
+        issues += [f"prezzo non positivo per {k}: {v}" for k, v in b.last_prices.items() if v <= 0]
+        for o in b.orders + list(b.rejected_orders):
+            if o.side not in {"BUY", "SELL"} or not o.quantity > 0 or not o.price > 0:
+                issues.append(f"ordine {o.id} non valido ({o.side} {o.quantity} @ {o.price})")
+        if issues:
+            raise ValueError(f"Stato del broker non valido: {issues}")
         issues = reconcile_broker(b).issues
         if issues:
             raise ValueError(f"Stato del broker incoerente con i suoi ordini: {issues}")
