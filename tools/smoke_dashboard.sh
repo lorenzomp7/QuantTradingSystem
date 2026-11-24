@@ -16,8 +16,10 @@
 # Variabili: PORT (10123), API_KEY (smoke-key), OUT_DIR (/tmp/qts-smoke),
 # ALLOW_NO_CHARTJS=1 per non fallire se Chart.js non arriva dal CDN (rete chiusa),
 # oppure CHARTJS_FILE=…/chart.umd.js per servirlo da un file locale (npm i chart.js@4.4.1).
-# Con BASE_URL lo script non avvia il server; Avvia/Ferma si provano solo se API_KEY è
-# impostata e lo stato del bot resta quello iniziale: se era già acceso non lo ferma.
+# Con BASE_URL lo script non avvia il server e non cambia lo stato del bot remoto: con
+# API_KEY prova Avvia solo se il bot è già acceso (risposta "già in esecuzione"), mai
+# Ferma. ALLOW_CONTROL=1 dà il consenso ad avviarlo e fermarlo (esegue un ciclo vero sul
+# registro paper). Senza API_URL l'indirizzo dell'API si legge da BASE_URL/config.js.
 # Quando pagina e API sono su origini diverse (PAGES=1 o API_URL) controlla anche
 # config.js, gli header CORS, il preflight di X-API-Key e il rifiuto di un'altra origine.
 
@@ -33,7 +35,13 @@ if [[ -n "${BASE_URL:-}" ]]; then
   REMOTE=1
   API_KEY="${API_KEY:-}"
   PAGE_URL="${BASE_URL%/}"
-  API_URL="${API_URL:-$PAGE_URL}"
+  [[ "$PAGES" == 1 ]] && echo "! PAGES=1 ignorato: con BASE_URL si prova la pagina indicata"
+  if [[ -z "${API_URL:-}" ]]; then
+    # Come la dashboard: se config.js indica un'API (GitHub Pages), si prova quella.
+    API_URL="$(curl -fs --max-time 15 "$PAGE_URL/config.js" \
+      | sed -n 's/.*window\.QTS_API *= *"\([^"]*\)".*/\1/p' | head -1 || true)"
+    API_URL="${API_URL:-$PAGE_URL}"
+  fi
 else
   API_KEY="${API_KEY:-smoke-key}"
   API_URL="http://127.0.0.1:${PORT}"
@@ -57,6 +65,10 @@ cleanup() {
   for pid in "$SERVER_PID" "$PAGES_PID" "$CHART_PID"; do
     [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
   done
+  # Aspetta che i server si chiudano davvero: una prova subito dopo riusa le stesse porte.
+  for pid in "$SERVER_PID" "$PAGES_PID" "$CHART_PID"; do
+    [[ -n "$pid" ]] && wait "$pid" 2>/dev/null || true
+  done
 }
 trap cleanup EXIT
 
@@ -68,7 +80,7 @@ js() { ab --json eval "$1" | python3 -c 'import json,sys; d=json.load(sys.stdin)
 msg_after_click() {  # testo di #msg dopo il clic su un pulsante
   ab eval 'document.getElementById("msg").textContent = ""' >/dev/null
   ab find text "$1" click >/dev/null
-  for _ in $(seq 1 20); do
+  for _ in $(seq 1 120); do   # fino a 30 s: Avvia e Ferma aspettano un ciclo completo
     local m; m="$(ab get text '#msg' 2>/dev/null || true)"
     [[ -n "$m" && "$m" != "…" ]] && { echo "$m"; return; }
     sleep 0.25
@@ -78,6 +90,10 @@ msg_after_click() {  # testo di #msg dopo il clic su un pulsante
 
 # ------------------------------------------------------------ Server locale
 if [[ "$REMOTE" == 0 ]]; then
+  for port in "$PORT" "$((PORT + 1))" "$((PORT + 2))"; do
+    ! curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$port/" \
+      || fail "la porta $port è già in uso: chiudi l'altro server o usa PORT=…"
+  done
   DATA_SOURCE=mock CONTROL_API_KEY="$API_KEY" AUTO_START_BOT=false LOG_LEVEL=WARNING \
     CORS_ORIGINS="$PAGE_ORIGIN" \
     python -m uvicorn main:app --host 127.0.0.1 --port "$PORT" >"$OUT_DIR/uvicorn.log" 2>&1 &
@@ -97,6 +113,7 @@ if [[ "$REMOTE" == 0 ]]; then
     python -m http.server "$((PORT + 2))" --bind 127.0.0.1 --directory "$SITE" >"$OUT_DIR/pages.log" 2>&1 &
     PAGES_PID=$!
     for _ in $(seq 1 20); do curl -fs -o /dev/null "$PAGE_URL/" && break; sleep 0.25; done
+    curl -fs -o /dev/null "$PAGE_URL/" || fail "il server della pagina non risponde (log: $OUT_DIR/pages.log)"
     ok "pagina come GitHub Pages su $PAGE_URL (API su $API_URL)"
   fi
 fi
@@ -104,7 +121,7 @@ fi
 # --------------------------------------------------------------- CORS
 if [[ "$CROSS_ORIGIN" == 1 ]]; then
   header() {  # valore di un header della risposta (minuscole), vuoto se assente
-    curl -s -o /dev/null -D - "${@:2}" | tr -d '\r' | awk -v h="$1" 'tolower($1)==h":" {sub(/^[^:]*: /,""); print}'
+    curl -s --max-time 15 -o /dev/null -D - "${@:2}" | tr -d '\r' | awk -v h="$1" 'tolower($1)==h":" {sub(/^[^:]*: /,""); print}'
   }
   got="$(header access-control-allow-origin -H "Origin: $PAGE_ORIGIN" "$API_URL/api/status")"
   [[ "$got" == "$PAGE_ORIGIN" ]] || fail "CORS: /api/status non autorizza $PAGE_ORIGIN (ricevuto: '$got')"
@@ -144,8 +161,9 @@ for vp in "1280 800" "390 844"; do
   fi
 
   metrics="$(js 'document.querySelectorAll("#metrics .metric").length')"
-  if [[ "$CROSS_ORIGIN" == 1 ]]; then
-    api="$(js '(window.QTS_API || "").replace(/\/$/, "")')"
+  ab wait "#costs table" >/dev/null || fail "[$W×$H] la tabella dei costi non compare: $(ab get text '#costs' 2>/dev/null)"
+  api="$(js '(window.QTS_API || "").replace(/\/$/, "")')"
+  if [[ "$CROSS_ORIGIN" == 1 || "$api" != '""' ]]; then
     [[ "$api" == "\"$API_URL\"" ]] || fail "[$W×$H] config.js: window.QTS_API = $api, atteso \"$API_URL\""
   fi
   [[ "$metrics" -ge 8 ]] || fail "[$W×$H] metriche mostrate: $metrics (attese 8)"
@@ -180,21 +198,30 @@ m="$(msg_after_click "Avvia")"
 [[ "$m" == *"401"* ]] || fail "Avvia senza chiave doveva dare 401, ha dato: '$m'"
 ok "Avvia senza chiave: $m"
 
-bot_running() { curl -fs "$API_URL/health" | python3 -c 'import json,sys; print(json.load(sys.stdin)["bot_running"])'; }
+bot_running() {
+  local body
+  body="$(curl -fs --max-time 15 "$API_URL/health")" || fail "$API_URL/health non risponde (API_URL giusto?)"
+  python3 -c 'import json,sys; print(json.loads(sys.argv[1])["bot_running"])' "$body" 2>/dev/null \
+    || fail "$API_URL/health non è la risposta dell'API: ${body:0:80}"
+}
 
 if [[ -n "$API_KEY" ]]; then
   was_running="$(bot_running)"
-  ab fill '#apikey' "$API_KEY" >/dev/null
-  m="$(msg_after_click "Avvia")"
-  [[ "$m" == *"avviato"* || "$m" == *"già in esecuzione"* ]] || fail "Avvia con chiave: '$m'"
-  ok "Avvia con chiave: $m"
-  [[ "$(bot_running)" == True ]] || fail "dopo Avvia /health dice che il bot è fermo"
-  if [[ "$was_running" == True ]]; then
-    echo "! il bot era già acceso: Ferma non provato, per non fermarlo"
+  if [[ "$REMOTE" == 1 && "$was_running" != True && "${ALLOW_CONTROL:-0}" != 1 ]]; then
+    echo "! il bot remoto è fermo: Avvia non provato (farebbe un ciclo vero); ALLOW_CONTROL=1 per provarlo"
   else
-    m="$(msg_after_click "Ferma")"
-    [[ "$m" == *"fermato"* ]] || fail "Ferma con chiave: '$m'"
-    ok "Ferma con chiave: $m (bot di nuovo fermo come all'inizio)"
+    ab fill '#apikey' "$API_KEY" >/dev/null
+    m="$(msg_after_click "Avvia")"
+    [[ "$m" == *"avviato"* || "$m" == *"già in esecuzione"* ]] || fail "Avvia con chiave: '$m'"
+    ok "Avvia con chiave: $m"
+    [[ "$(bot_running)" == True ]] || fail "dopo Avvia /health dice che il bot è fermo"
+    if [[ "$was_running" == True ]]; then
+      echo "! il bot era già acceso: Ferma non provato, per non fermarlo"
+    else
+      m="$(msg_after_click "Ferma")"
+      [[ "$m" == *"fermato"* ]] || fail "Ferma con chiave: '$m'"
+      ok "Ferma con chiave: $m (bot di nuovo fermo come all'inizio)"
+    fi
   fi
 else
   echo "! API_KEY non impostata: Avvia/Ferma con chiave non provati"

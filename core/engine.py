@@ -108,7 +108,7 @@ class TradingEngine:
 
         Si confronta lo *stato* del segnale con la posizione reale (invece di
         reagire solo all'evento di crossover): è più robusto a riavvii del
-        servizio, (deploy e riavvii del container).
+        servizio (deploy e riavvii del container).
         """
         if not self._cycle_lock.acquire(blocking=False):
             raise RuntimeError("Un ciclo è già in esecuzione.")

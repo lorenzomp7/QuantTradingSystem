@@ -82,8 +82,10 @@
 const API = (window.QTS_API || "").replace(/\/$/, "");
 const $ = (id) => document.getElementById(id);
 let chart;
-try { $("apikey").value = localStorage.getItem("qts_api_key") || ""; } catch (e) {}
-$("apikey").addEventListener("change", () => { try { localStorage.setItem("qts_api_key", $("apikey").value); } catch (e) {} });
+// La chiave resta solo per questa scheda (sessionStorage): su GitHub Pages l'origine
+// lorenzomp7.github.io è condivisa da tutte le pagine dell'account, e localStorage con lei.
+try { localStorage.removeItem("qts_api_key"); $("apikey").value = sessionStorage.getItem("qts_api_key") || ""; } catch (e) {}
+$("apikey").addEventListener("change", () => { try { sessionStorage.setItem("qts_api_key", $("apikey").value); } catch (e) {} });
 
 const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const kv = (obj) => Object.entries(obj).map(([k, v]) =>
@@ -128,8 +130,9 @@ async function backtest() {
   const q = new URLSearchParams({ symbol: $("bt-symbol").value, short_window: $("bt-short").value,
     long_window: $("bt-long").value, period: $("bt-period").value });
   $("metrics").innerHTML = "<small>Calcolo in corso…</small>";
-  const r = await fetch(API + "/api/backtest?" + q);
-  const body = await r.json();
+  let r, body;
+  try { r = await fetch(API + "/api/backtest?" + q); body = await r.json(); }
+  catch (e) { $("metrics").innerHTML = `<small>API non raggiungibile: ${esc(String(e))}</small>`; return; }
   if (!r.ok) { $("metrics").innerHTML = `<small>Errore: ${esc(JSON.stringify(body.detail))}</small>`; return; }
   const m = body.metrics;
   const show = { "Rendimento %": m.total_return_pct, "Buy&Hold %": m.buy_and_hold_return_pct, "CAGR %": m.cagr_pct,
@@ -166,8 +169,9 @@ async function backtest() {
 
 async function costs(q) {
   // Tabella commissioni × slippage dallo stesso backtest (/api/backtest/costs).
-  const r = await fetch(API + "/api/backtest/costs?" + q);
-  const body = await r.json();
+  let r, body;
+  try { r = await fetch(API + "/api/backtest/costs?" + q); body = await r.json(); }
+  catch (e) { $("costs").innerHTML = `<small>API non raggiungibile: ${esc(String(e))}</small>`; return; }
   if (!r.ok) { $("costs").innerHTML = `<small>Errore: ${esc(JSON.stringify(body.detail))}</small>`; return; }
   const mults = [...new Set(body.rows.map(x => x.fee_multiplier))];
   const slips = [...new Set(body.rows.map(x => x.slippage_bps))];

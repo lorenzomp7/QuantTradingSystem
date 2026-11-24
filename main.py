@@ -92,6 +92,25 @@ if settings.cors_origins:
     )
 
 
+async def run_job(job, what: str):
+    """
+    Esegue un calcolo bloccante in un thread e traduce gli errori in risposte HTTP.
+
+    ValueError (parametri o dati non validi) -> 422; ogni altra eccezione -> 502
+    con il nome dell'errore. Un 500 grezzo uscirebbe senza header CORS e la
+    dashboard su GitHub Pages vedrebbe solo "Failed to fetch".
+    """
+    try:
+        return await asyncio.to_thread(job)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # rete, Yahoo, bug: va comunque raccontato al client
+        logger.exception("%s non riuscito", what)
+        raise HTTPException(status_code=502, detail=f"{what} non riuscito: {type(exc).__name__}: {str(exc)[:200]}") from exc
+
+
 # ------------------------------------------------------------ Sicurezza
 def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
     """Dependency che protegge gli endpoint di controllo."""
@@ -178,10 +197,7 @@ async def run_backtest(
         out["data_source"] = engine.fetcher.last_source_used
         return out
 
-    try:
-        return await asyncio.to_thread(_job)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return await run_job(_job, "Backtest")
 
 
 @app.get("/api/backtest/costs", tags=["strategy"])
@@ -211,10 +227,7 @@ async def backtest_costs(
         out["data_source"] = engine.fetcher.last_source_used
         return out
 
-    try:
-        return await asyncio.to_thread(_job)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return await run_job(_job, "Backtest dei costi")
 
 
 @app.get("/api/data-health", tags=["system"])
@@ -242,7 +255,7 @@ async def data_health() -> JSONResponse:
             "ok": blocked is None,
         }
 
-    body = await asyncio.to_thread(_job)
+    body = await run_job(_job, "Controllo dei dati")
     return JSONResponse(body, status_code=200 if body["ok"] else 503)
 
 

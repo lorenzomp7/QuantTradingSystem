@@ -184,9 +184,16 @@ metriche, grafico e assenza di errori nella pagina, prova Avvia/Ferma senza chia
 con chiave, salva gli screenshot. Con `PAGES=1` serve la pagina come la pubblica
 `pages.yml` (con `config.js`) da un'altra origine e controlla anche CORS: origine della
 dashboard autorizzata, preflight di `X-API-Key`, origine estranea rifiutata. Con
-`BASE_URL=… API_URL=… API_KEY=…` prova la dashboard pubblicata su GitHub Pages contro
-l'API sulla VM; se il bot era già acceso non lo ferma. In CI gira come job facoltativo
-`smoke-dashboard`, nelle due modalità.
+`BASE_URL=https://lorenzomp7.github.io/QuantTradingSystem/ API_KEY=…` prova la dashboard
+pubblicata contro l'API indicata dal suo `config.js` (o da `API_URL`) senza cambiare lo
+stato del bot: Avvia si prova solo se è già acceso, Ferma mai; `ALLOW_CONTROL=1` dà il
+consenso ad avviarlo e fermarlo. In CI gira come job facoltativo `smoke-dashboard`,
+nelle due modalità.
+
+La chiave API inserita nella dashboard resta solo nella scheda (`sessionStorage`):
+l'origine `lorenzomp7.github.io` è condivisa da tutte le pagine GitHub Pages dell'account,
+che con `localStorage` potrebbero leggerla. Per lo stesso motivo CORS autorizza l'intera
+origine, non il solo progetto: un dominio dedicato per Pages la renderebbe separata.
 
 ```bash
 npm i -g agent-browser && agent-browser install --with-deps

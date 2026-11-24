@@ -64,3 +64,9 @@ al posto di Yahoo (Yahoo non risponde dalla VM) o perché l'ultima candela è tr
 vecchia. Il riepilogo del job mostra fonte richiesta, fonte usata, ultima candela e
 motivo. Dalla VM si ripete con `curl -s https://<API_HOST>/api/data-health` oppure,
 nel container, `docker exec quant-trading-system python -m utils.data_health`.
+
+Con un'azione e candele intraday (per esempio `SYMBOL=SPY`, `DATA_INTERVAL=5m`) a mercato
+chiuso l'ultima candela è vecchia di ore: il controllo risponde 503 e il deploy è rosso
+anche se è tutto a posto, e il bot non opera fino alla seduta successiva. Con il simbolo
+predefinito BTC-USD (aperto 24/7) non succede. Per un'azione conviene `DATA_INTERVAL=1d`,
+oppure fare il deploy a mercato aperto.

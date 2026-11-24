@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 import main
@@ -79,7 +80,7 @@ def test_backtest_endpoint_annualizes_by_market():
 
 def test_dashboard_on_github_pages_can_call_the_api():
     """La dashboard su GitHub Pages è su un'altra origine: servono CORS e il preflight per X-API-Key."""
-    pages = "https://lorenzomp7.github.io"
+    pages = main.settings.cors_origins[0]   # da config: non dipende da un .env locale
     with TestClient(main.app) as client:
         r = client.get("/api/status", headers={"Origin": pages})
         assert r.headers["access-control-allow-origin"] == pages
@@ -104,3 +105,19 @@ def test_dashboard_calls_go_through_the_api_address():
     assert calls, "nessuna chiamata fetch trovata"
     for arg in calls:
         assert arg.strip().startswith(("API", "`${API}")), f"fetch senza l'indirizzo dell'API: {arg}"
+
+
+@pytest.mark.parametrize("path", ["/api/backtest", "/api/backtest/costs", "/api/data-health"])
+def test_unexpected_errors_return_502_with_cors(monkeypatch, path):
+    # Su GitHub Pages un 500 senza header CORS arriva al browser solo come "Failed to fetch".
+    def boom(*_a, **_k):
+        raise RuntimeError("guasto inatteso")
+
+    monkeypatch.setattr(main.engine.fetcher, "get_ohlcv", boom)
+    monkeypatch.setattr(main.engine.fetcher, "get_ohlcv_with_info", boom)
+    origin = main.settings.cors_origins[0]
+    with TestClient(main.app, raise_server_exceptions=False) as client:
+        r = client.get(path, headers={"Origin": origin})
+        assert r.status_code == 502
+        assert r.headers["access-control-allow-origin"] == origin
+        assert "RuntimeError" in r.json()["detail"]
