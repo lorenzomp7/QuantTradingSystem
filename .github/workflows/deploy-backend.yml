@@ -65,3 +65,29 @@ jobs:
           [ -n "$API_HOST" ] || API_HOST="quant.${VM_HOST//./-}.sslip.io"
           for i in $(seq 1 20); do curl -fsS "https://$API_HOST/health" && exit 0; sleep 6; done
           echo "L'API non risponde su https://$API_HOST/health" && exit 1
+      # Il container risponde: ora si controlla che il bot abbia dati veri e recenti.
+      # 503 = ripiego sulla serie mock (Yahoo non risponde dalla VM) o ultima candela vecchia:
+      # il bot gira ma non invia ordini. Tre tentativi, perché il primo scarica i dati.
+      - name: Salute dei dati
+        run: |
+          [ -n "$API_HOST" ] || API_HOST="quant.${VM_HOST//./-}.sslip.io"
+          for i in 1 2 3; do
+            code=$(curl -sS -o data-health.json -w '%{http_code}' --max-time 90 "https://$API_HOST/api/data-health" || echo 000)
+            [ "$code" = 200 ] && break
+            sleep 20
+          done
+          python3 - "$code" <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json, sys
+          code = sys.argv[1]
+          try:
+              d = json.load(open("data-health.json"))
+          except Exception:
+              d = {}
+          print(f"### Salute dei dati: HTTP {code}")
+          for k in ("symbol", "interval", "requested_source", "source", "last_bar", "age_seconds", "orders_blocked"):
+              print(f"- {k}: {d.get(k)}")
+          PY
+          if [ "$code" != 200 ]; then
+            echo "::error::/api/data-health risponde $code: il bot è attivo ma non invia ordini (vedi il riepilogo)."
+            exit 1
+          fi

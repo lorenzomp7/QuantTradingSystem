@@ -55,3 +55,12 @@ sudo docker ps                                  # container attivi
 sudo docker logs -f <app>                       # log di un'app
 sudo docker compose -p <app> -f /opt/apps/<app>/deploy/compose.yml restart
 ```
+
+## Controllo dopo il deploy
+
+Dopo `/health` il workflow chiama `/api/data-health`. Se risponde 503 il deploy è
+rosso anche se il container gira: il bot non invia ordini perché usa la serie mock
+al posto di Yahoo (Yahoo non risponde dalla VM) o perché l'ultima candela è troppo
+vecchia. Il riepilogo del job mostra fonte richiesta, fonte usata, ultima candela e
+motivo. Dalla VM si ripete con `curl -s https://<API_HOST>/api/data-health` oppure,
+nel container, `docker exec quant-trading-system python -m utils.data_health`.
