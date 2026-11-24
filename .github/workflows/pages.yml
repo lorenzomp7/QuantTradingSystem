@@ -1,17 +1,33 @@
 # Pubblica la dashboard su GitHub Pages: https://lorenzomp7.github.io/QuantTradingSystem/
-# config.js la collega all'API sulla VM Oracle (variabili del repo VM_HOST o API_HOST).
+#
+# Due modalità, scelte dalle variabili del repository:
+# - con VM (VM_HOST o API_HOST impostate): config.js collega la pagina all'API sulla VM Oracle;
+#   il sito si ricostruisce solo a ogni push e a mano, le esecuzioni pianificate non fanno nulla.
+# - senza VM (nessuna delle due): ogni ora il bot esegue un ciclo qui (tools/bot_once.py, broker
+#   paper), lo stato resta nel branch `bot-state`, i prezzi giornalieri si aggiornano una volta al
+#   giorno (tools/data_snapshot.py) e la pagina calcola backtest e costi nel browser con Pyodide.
+#   Variabili facoltative: BOT_ENABLED (false = cicli saltati), BOT_SYMBOL (BTC-USD),
+#   SNAPSHOT_SYMBOLS (SPY,QQQ,AAPL,MSFT,BTC-USD,ETH-USD).
 name: GitHub Pages
 
 on:
   push:
     branches: [main]
-    paths: [templates/dashboard.html, .github/workflows/pages.yml]
+    paths:
+      - templates/dashboard.html
+      - strategy/**
+      - utils/**
+      - web/**
+      - tools/bot_once.py
+      - tools/build_static_site.py
+      - tools/data_snapshot.py
+      - .github/workflows/pages.yml
+  schedule:
+    - cron: "17 * * * *"   # ogni ora al minuto 17 (GitHub può ritardare o saltare un'esecuzione)
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
@@ -19,34 +35,130 @@ concurrency:
 
 jobs:
   build:
+    # Con la VM la pianificazione oraria non serve: il bot gira lì.
+    if: github.event_name != 'schedule' || (vars.VM_HOST == '' && vars.API_HOST == '')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write   # solo per il branch bot-state (modalità senza VM)
+    env:
+      STATIC: ${{ vars.VM_HOST == '' && vars.API_HOST == '' }}
+    outputs:
+      bot: ${{ steps.bot.outcome }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
-      - name: Prepara il sito
+
+      # ---------------------------------------------------------- con VM
+      - name: Sito collegato all'API sulla VM
+        if: env.STATIC != 'true'
         env:
           API_HOST: ${{ vars.API_HOST }}
           VM_HOST: ${{ vars.VM_HOST }}
         run: |
           mkdir _site
           cp templates/dashboard.html _site/index.html
-          if [ -z "$API_HOST" ] && [ -n "$VM_HOST" ]; then API_HOST="quant.${VM_HOST//./-}.sslip.io"; fi
-          if [ -n "$API_HOST" ]; then
-            printf 'window.QTS_API = "https://%s";\n' "$API_HOST" > _site/config.js
-          else
-            echo '// API non ancora configurata: imposta la variabile VM_HOST del repo' > _site/config.js
-          fi
+          if [ -z "$API_HOST" ]; then API_HOST="quant.${VM_HOST//./-}.sslip.io"; fi
+          printf 'window.QTS_API = "https://%s";\n' "$API_HOST" > _site/config.js
           cat _site/config.js
+
+      # -------------------------------------------------------- senza VM
+      - uses: actions/setup-python@v5
+        if: env.STATIC == 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Dipendenze
+        if: env.STATIC == 'true'
+        run: python -m pip install -r requirements.txt
+      - name: Stato precedente (branch bot-state)
+        if: env.STATIC == 'true'
+        run: |
+          mkdir state
+          # 2 = branch assente (primo avvio); un altro errore ferma tutto, per non
+          # ripartire da un conto nuovo e sovrascrivere quello vero.
+          rc=0; git ls-remote --exit-code --heads origin bot-state >/dev/null || rc=$?
+          if [ "$rc" = 0 ]; then
+            git fetch -q --depth=1 origin bot-state
+            git --work-tree=state checkout FETCH_HEAD -- .
+            git reset -q
+          elif [ "$rc" = 2 ]; then
+            echo "Branch bot-state assente: primo avvio, si parte da un conto paper nuovo."
+          else
+            echo "::error::Impossibile leggere il branch bot-state (git ls-remote: $rc)"; exit 1
+          fi
+          ls -la state
+      - name: Ciclo del bot (paper)
+        id: bot
+        if: env.STATIC == 'true' && github.event_name != 'push'
+        continue-on-error: true   # lo stato si salva comunque; il job fallisce alla fine
+        env:
+          BOT_ENABLED: ${{ vars.BOT_ENABLED || 'true' }}
+          SYMBOL: ${{ vars.BOT_SYMBOL || 'BTC-USD' }}
+          BROKER: paper
+          DATA_SOURCE: yahoo
+          DATA_INTERVAL: 1h
+          DATA_PERIOD: 60d
+          BOT_SCHEDULE: ogni ora (GitHub Actions)
+          LOG_LEVEL: INFO
+        run: python -m tools.bot_once --state-dir state
+      - name: Prezzi giornalieri per il backtest
+        id: snapshot
+        if: env.STATIC == 'true'
+        continue-on-error: true   # se Yahoo non risponde restano gli ultimi file
+        run: |
+          python -m tools.data_snapshot --out state/data --if-older-than 20 \
+            --symbols "${{ vars.SNAPSHOT_SYMBOLS || 'SPY,QQQ,AAPL,MSFT,BTC-USD,ETH-USD' }}"
+      - name: Salva lo stato nel branch bot-state
+        if: env.STATIC == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd state
+          git init -q -b bot-state
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cat > README.md <<'EOF'
+          # bot-state
+
+          Stato del bot paper scritto da `.github/workflows/pages.yml` (modalità senza VM):
+          `broker.json`, `status.json`, `logs.json`, `equity.csv` e i prezzi in `data/`.
+          Il branch viene riscritto a ogni esecuzione con un solo commit: la storia del conto è in `equity.csv`.
+          Per ripartire da zero cancella il branch.
+          EOF
+          git add -A
+          git commit -q -m "Stato del bot ($(date -u +%Y-%m-%dT%H:%MZ), run ${{ github.run_id }})"
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" bot-state
+      - name: Sito statico
+        if: env.STATIC == 'true'
+        run: |
+          python -m tools.build_static_site --out _site --state state --data state/data \
+            --actions-url "${{ github.server_url }}/${{ github.repository }}/actions/workflows/pages.yml"
+          cat _site/config.js
+
+      - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
+      - name: Prezzi non aggiornati
+        if: steps.snapshot.outcome == 'failure'
+        run: echo "::warning::Yahoo non ha risposto per alcuni simboli; il backtest usa gli ultimi prezzi salvati (data/index.json)."
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+      # Dopo la pubblicazione: un ciclo fallito rende rossa l'esecuzione (e GitHub lo notifica).
+      - name: Esito del bot
+        if: needs.build.outputs.bot == 'failure'
+        run: |
+          echo "::error::Il ciclo del bot è fallito: la pagina mostra l'errore in «Stato del bot»."
+          exit 1

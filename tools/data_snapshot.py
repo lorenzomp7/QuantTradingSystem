@@ -17,7 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -37,10 +37,25 @@ def file_name(symbol: str) -> str:
     return snapshot_name(symbol)
 
 
+def _fresh(index: dict, symbols: list[str], hours: float) -> bool:
+    """True se ogni simbolo ha un aggiornamento riuscito più recente di `hours` ore."""
+    limit = datetime.now(timezone.utc) - timedelta(hours=hours)
+    for symbol in symbols:
+        entry = index.get("symbols", {}).get(symbol) or {}
+        try:
+            if not entry.get("ok") or datetime.fromisoformat(entry["updated_at"]) < limit:
+                return False
+        except (KeyError, ValueError, TypeError):
+            return False
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Snapshot dei prezzi giornalieri per la dashboard statica.")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--symbols", default=DEFAULT_SYMBOLS, help="separati da virgola")
+    ap.add_argument("--if-older-than", type=float, metavar="ORE",
+                    help="non fa nulla se l'ultimo snapshot riuscito per tutti i simboli è più recente")
     args = ap.parse_args(argv)
     args.out.mkdir(parents=True, exist_ok=True)
 
@@ -49,9 +64,13 @@ def main(argv: list[str] | None = None) -> int:
         index = json.loads(index_path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
         index = {"symbols": {}}
+    symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    if args.if_older_than is not None and _fresh(index, symbols, args.if_older_than):
+        print(f"Snapshot aggiornati da meno di {args.if_older_than:g} ore: niente da fare.")
+        return 0
     now = datetime.now(timezone.utc).isoformat()
     code = 0
-    for symbol in [s.strip().upper() for s in args.symbols.split(",") if s.strip()]:
+    for symbol in symbols:
         path = args.out / file_name(symbol)
         entry = index["symbols"].get(symbol, {})
         try:

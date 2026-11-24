@@ -32,7 +32,7 @@ jobs:
   # Facoltativa: se fallisce lo segnala, ma non blocca pytest.
   smoke-dashboard:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -58,6 +58,11 @@ jobs:
         env:
           PAGES: "1"
           OUT_DIR: ${{ runner.temp }}/qts-smoke-pages
+      # GitHub Pages senza VM: stato dai file del bot, backtest nel browser con Pyodide (dal CDN).
+      - run: bash tools/smoke_static.sh
+        timeout-minutes: 8
+        env:
+          OUT_DIR: ${{ runner.temp }}/qts-smoke-static
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -65,4 +70,5 @@ jobs:
           path: |
             ${{ runner.temp }}/qts-smoke
             ${{ runner.temp }}/qts-smoke-pages
+            ${{ runner.temp }}/qts-smoke-static/*.png
           if-no-files-found: ignore

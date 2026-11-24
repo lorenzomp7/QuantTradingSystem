@@ -44,6 +44,32 @@ def test_snapshot_keeps_old_file_when_yahoo_fails(tmp_path, monkeypatch):
     assert entry["ok"] is False and "bloccato" in entry["error"] and entry["rows"] > 200
 
 
+def test_snapshot_skips_when_fresh_and_retries_after_a_failure(tmp_path, monkeypatch):
+    calls = []
+
+    def fake(s, p, i):
+        calls.append(s)
+        return generate_mock_ohlcv(s, "1y", i)
+
+    monkeypatch.setattr(df_mod, "fetch_yahoo", fake)
+    args = ["--out", str(tmp_path), "--symbols", "SPY,QQQ", "--if-older-than", "20"]
+    assert data_snapshot.main(args) == 0 and calls == ["SPY", "QQQ"]
+    assert data_snapshot.main(args) == 0 and calls == ["SPY", "QQQ"]          # recenti: niente rete
+    # Un simbolo nuovo o un aggiornamento fallito fanno ripartire il giro.
+    assert data_snapshot.main(args[:3] + ["SPY,QQQ,AAPL"] + args[4:]) == 0 and len(calls) == 5
+    index_path = tmp_path / "index.json"
+    index = json.loads(index_path.read_text())
+    index["symbols"]["SPY"]["ok"] = False
+    index_path.write_text(json.dumps(index))
+    assert data_snapshot.main(args) == 0 and len(calls) == 7
+    # Più vecchi della soglia: si aggiornano.
+    index = json.loads(index_path.read_text())
+    for e in index["symbols"].values():
+        e["updated_at"] = "2020-01-01T00:00:00+00:00"
+    index_path.write_text(json.dumps(index))
+    assert data_snapshot.main(args) == 0 and len(calls) == 9
+
+
 @pytest.mark.parametrize("bad", ["../x", "a/b", "", "SPY;rm"])
 def test_snapshot_rejects_unsafe_symbols(bad):
     with pytest.raises(ValueError):
