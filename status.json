@@ -1,0 +1,94 @@
+{
+ "running": true,
+ "symbol": "BTC-USD",
+ "strategy": "moving_average_crossover",
+ "params": {
+  "short_window": 20,
+  "long_window": 50,
+  "fee_bps": 5.0
+ },
+ "data_source": "yahoo",
+ "data_interval": "1h",
+ "data_period": "60d",
+ "last_data_source_used": "yahoo",
+ "data": {
+  "symbol": "BTC-USD",
+  "interval": "1h",
+  "requested_source": "yahoo",
+  "source": "yahoo",
+  "rows": 1424,
+  "last_bar": "2026-11-28T07:00:00",
+  "fetched_at": 1795852571.2676048,
+  "warnings": [],
+  "fallback": false,
+  "age_seconds": 3371,
+  "orders_blocked": null
+ },
+ "loop_interval_seconds": 60,
+ "started_at": "2026-11-24T16:03:06.127043+00:00",
+ "last_run_at": "2026-11-28T07:56:11.270170+00:00",
+ "cycles": 13,
+ "last_signal": {
+  "timestamp": "2026-11-28T06:00:00",
+  "close": 59736.6484,
+  "signal": 0,
+  "action": "SELL",
+  "sma_short": 60059.8588,
+  "sma_long": 60552.0491,
+  "signal_bar_close": 59684.4492,
+  "crossover": "HOLD",
+  "order": {
+   "symbol": "BTC-USD",
+   "side": "SELL",
+   "quantity": 0.164318,
+   "price": 59736.6484375,
+   "id": "f86dbe1d3fa4",
+   "status": "filled",
+   "timestamp": "2026-11-28T07:56:11.270052+00:00",
+   "reason": null
+  },
+  "data_source": "yahoo",
+  "orders_blocked": null,
+  "evaluated_at": "2026-11-28T07:56:11.270170+00:00"
+ },
+ "last_error": null,
+ "account": {
+  "broker": "paper",
+  "cash": 9810.9,
+  "market_value": 0.0,
+  "equity": 9810.9,
+  "pnl": -189.1,
+  "positions": {},
+  "orders": [
+   {
+    "symbol": "BTC-USD",
+    "side": "BUY",
+    "quantity": 0.164318,
+    "price": 60827.1796875,
+    "id": "902c50099f32",
+    "status": "filled",
+    "timestamp": "2026-11-26T12:44:06.777899+00:00",
+    "reason": null
+   },
+   {
+    "symbol": "BTC-USD",
+    "side": "SELL",
+    "quantity": 0.164318,
+    "price": 59736.6484375,
+    "id": "f86dbe1d3fa4",
+    "status": "filled",
+    "timestamp": "2026-11-28T07:56:11.270052+00:00",
+    "reason": null
+   }
+  ],
+  "rejected_orders": [],
+  "order_counts": {
+   "filled": 2,
+   "rejected": 0
+  }
+ },
+ "mode": "github-actions",
+ "schedule": "ogni ora (GitHub Actions)",
+ "last_rejection": null,
+ "written_at": "2026-11-28T07:56:11.270469+00:00"
+}

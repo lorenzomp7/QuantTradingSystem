@@ -1,0 +1,170 @@
+[
+ {
+  "timestamp": "2026-11-24T16:03:06.863355+00:00",
+  "level": "INFO",
+  "logger": "utils.data_fetcher",
+  "message": "Caricate 1433 barre per BTC-USD (60d, 1h) da 'yahoo'."
+ },
+ {
+  "timestamp": "2026-11-24T16:03:06.865020+00:00",
+  "level": "INFO",
+  "logger": "core.engine",
+  "message": "Ciclo #1 BTC-USD: close=59473.49 signal=0 action=HOLD order=-"
+ },
+ {
+  "timestamp": "2026-11-24T16:03:57.255100+00:00",
+  "level": "INFO",
+  "logger": "utils.data_fetcher",
+  "message": "Caricate 1433 barre per BTC-USD (60d, 1h) da 'yahoo'."
+ },
+ {
+  "timestamp": "2026-11-24T16:03:57.256692+00:00",
+  "level": "INFO",
+  "logger": "core.engine",
+  "message": "Ciclo #2 BTC-USD: close=59562.73 signal=0 action=HOLD order=-"
+ },
+ {
+  "timestamp": "2026-11-24T17:23:52.162894+00:00",
+  "level": "INFO",
+  "logger": "utils.data_fetcher",
+  "message": "Caricate 1434 barre per BTC-USD (60d, 1h) da 'yahoo'."
+ },
+ {
+  "timestamp": "2026-11-24T17:23:52.165191+00:00",
+  "level": "INFO",
+  "logger": "core.engine",
+  "message": "Ciclo #3 BTC-USD: close=59609.43 signal=0 action=HOLD order=-"
+ },
+ {
+  "timestamp": "2026-11-25T00:49:33.113754+00:00",
+  "level": "INFO",
+  "logger": "utils.data_fetcher",
+  "message": "Caricate 1417 barre per BTC-USD (60d, 1h) da 'yahoo'."
+ },
+ {
+  "timestamp": "2026-11-25T00:49:33.116122+00:00",
+  "level": "INFO",
+  "logger": "core.engine",
+  "message": "Ciclo #4 BTC-USD: close=59537.01 signal=0 action=HOLD order=-"
+ },
+ {
+  "timestamp": "2026-11-25T09:53:50.942928+00:00",
+  "level": "INFO",
+  "logger": "utils.data_fetcher",
+  "message": "Caricate 1426 barre per BTC-USD (60d, 1h) da 'yahoo'."
+ },
+ {
+  "timestamp": "2026-11-25T09:53:50.944249+00:00",
+  "level": "INFO",
+  "logger": "core.engine",
+  "message": "Ciclo #5 BTC-USD: close=58799.68 signal=0 action=HOLD order=-"
+ },
+ {
+  "timestamp": "2026-11-25T19:58:11.433159+00:00",
+  "level": "INFO",
+  "logger": "utils.data_fetcher",
+  "message": "Caricate 1436 barre per BTC-USD (60d, 1h) da 'yahoo'."
+ },
+ {
+  "timestamp": "2026-11-25T19:58:11.434769+00:00",
+  "level": "INFO",
+  "logger": "core.engine",
+  "message": "Ciclo #6 BTC-USD: close=59877.10 signal=0 action=HOLD order=-"
+ },
+ {
+  "timestamp": "2026-11-26T02:53:19.634386+00:00",
+  "level": "INFO",
+  "logger": "utils.data_fetcher",
+  "message": "Caricate 1417 barre per BTC-USD (60d, 1h) da 'yahoo'."
+ },
+ {
+  "timestamp": "2026-11-26T02:53:19.637580+00:00",
+  "level": "INFO",
+  "logger": "core.engine",
+  "message": "Ciclo #7 BTC-USD: close=60712.64 signal=0 action=HOLD order=-"
+ },
+ {
+  "timestamp": "2026-11-26T12:44:06.776141+00:00",
+  "level": "INFO",
+  "logger": "utils.data_fetcher",
+  "message": "Caricate 1429 barre per BTC-USD (60d, 1h) da 'yahoo'."
+ },
+ {
+  "timestamp": "2026-11-26T12:44:06.777919+00:00",
+  "level": "INFO",
+  "logger": "execution.broker",
+  "message": "[PAPER] BUY 0.1643 BTC-USD @ 60827.1797 (fee 5.00)"
+ },
+ {
+  "timestamp": "2026-11-26T12:44:06.778036+00:00",
+  "level": "INFO",
+  "logger": "core.engine",
+  "message": "Ciclo #8 BTC-USD: close=60827.18 signal=1 action=BUY order=BUY"
+ },
+ {
+  "timestamp": "2026-11-26T22:23:53.173144+00:00",
+  "level": "INFO",
+  "logger": "utils.data_fetcher",
+  "message": "Caricate 1439 barre per BTC-USD (60d, 1h) da 'yahoo'."
+ },
+ {
+  "timestamp": "2026-11-26T22:23:53.175418+00:00",
+  "level": "INFO",
+  "logger": "core.engine",
+  "message": "Ciclo #9 BTC-USD: close=60522.02 signal=1 action=HOLD order=-"
+ },
+ {
+  "timestamp": "2026-11-27T05:06:19.988763+00:00",
+  "level": "INFO",
+  "logger": "utils.data_fetcher",
+  "message": "Caricate 1422 barre per BTC-USD (60d, 1h) da 'yahoo'."
+ },
+ {
+  "timestamp": "2026-11-27T05:06:19.990427+00:00",
+  "level": "INFO",
+  "logger": "core.engine",
+  "message": "Ciclo #10 BTC-USD: close=61534.56 signal=1 action=HOLD order=-"
+ },
+ {
+  "timestamp": "2026-11-27T15:10:37.062680+00:00",
+  "level": "INFO",
+  "logger": "utils.data_fetcher",
+  "message": "Caricate 1432 barre per BTC-USD (60d, 1h) da 'yahoo'."
+ },
+ {
+  "timestamp": "2026-11-27T15:10:37.065186+00:00",
+  "level": "INFO",
+  "logger": "core.engine",
+  "message": "Ciclo #11 BTC-USD: close=59249.30 signal=1 action=HOLD order=-"
+ },
+ {
+  "timestamp": "2026-11-27T23:30:31.206888+00:00",
+  "level": "INFO",
+  "logger": "utils.data_fetcher",
+  "message": "Caricate 1440 barre per BTC-USD (60d, 1h) da 'yahoo'."
+ },
+ {
+  "timestamp": "2026-11-27T23:30:31.209098+00:00",
+  "level": "INFO",
+  "logger": "core.engine",
+  "message": "Ciclo #12 BTC-USD: close=59779.00 signal=1 action=HOLD order=-"
+ },
+ {
+  "timestamp": "2026-11-28T07:56:11.267643+00:00",
+  "level": "INFO",
+  "logger": "utils.data_fetcher",
+  "message": "Caricate 1424 barre per BTC-USD (60d, 1h) da 'yahoo'."
+ },
+ {
+  "timestamp": "2026-11-28T07:56:11.270077+00:00",
+  "level": "INFO",
+  "logger": "execution.broker",
+  "message": "[PAPER] SELL 0.1643 BTC-USD @ 59736.6484 (fee 4.91)"
+ },
+ {
+  "timestamp": "2026-11-28T07:56:11.270195+00:00",
+  "level": "INFO",
+  "logger": "core.engine",
+  "message": "Ciclo #13 BTC-USD: close=59736.65 signal=0 action=SELL order=SELL"
+ }
+]
