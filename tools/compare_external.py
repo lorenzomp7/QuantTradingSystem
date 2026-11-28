@@ -11,9 +11,10 @@ separato con Python >= 3.11, perché porta molte dipendenze:
     python tools/compare_external.py --vibe-python ~/.venvs/vibe/bin/python
 
 Regole di esecuzione rese uguali:
-* QTS esegue al close della barra del segnale (posizione in t = segnale di t-1);
-  Vibe-Trading esegue all'open della barra successiva. I dati del confronto
-  hanno open(t) = close(t-1), quindi i due prezzi di esecuzione coincidono.
+* QTS e Vibe-Trading eseguono entrambi all'open della barra dopo il segnale
+  (`execution="next_open"`, posizione in t = segnale di t-1). I dati del
+  confronto hanno open(t) = close(t-1): il prezzo d'esecuzione è lo stesso
+  anche con `execution="close"` (close della barra del segnale).
 * Commissione: `fee_bps` per QTS, `commission = fee_bps / 10000` (maker =
   taker) per Vibe-Trading; slippage e funding a zero.
 * Vibe-Trading chiude la posizione aperta all'ultima barra (end_of_backtest)
@@ -82,8 +83,8 @@ def comparison_data(symbol: str, period: str, end: str = "2026-11-20") -> pd.Dat
     """
     Dati mock giornalieri 24/7 con open(t) = close(t-1).
 
-    Con questo vincolo il close della barra del segnale (QTS) e l'open della
-    barra dopo (Vibe-Trading) sono lo stesso prezzo.
+    Con questo vincolo l'open della barra dopo il segnale (regola di QTS e di
+    Vibe-Trading) e il close della barra del segnale sono lo stesso prezzo.
     """
     d = generate_mock_ohlcv(symbol, period, "1d")
     d.index = pd.date_range(end=end, periods=len(d), freq="D", name="date")
@@ -98,7 +99,7 @@ def qts_summary(data: pd.DataFrame, params: StrategyParams, bpy: int) -> Summary
     res = MovingAverageCrossover(params).backtest(data, bars_per_year=bpy)
     m = res.metrics
     final = float(res.equity_curve.iloc[-1])
-    if int(res.signals["signal"].iloc[-2]) == 1:   # in posizione all'ultima barra
+    if int(res.signals["in_market"].iloc[-1]) == 1:   # in posizione all'ultima barra
         final -= final * params.fee_bps / 10_000    # chiusura come Vibe-Trading
     sides = res.trades["side"].value_counts()
     return Summary(

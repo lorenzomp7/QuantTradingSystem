@@ -19,7 +19,7 @@ import re
 import pandas as pd
 
 from strategy.metrics import bars_per_year, infer_market
-from strategy.quant_model import MovingAverageCrossover, StrategyParams
+from strategy.quant_model import EXECUTIONS, MovingAverageCrossover, StrategyParams
 from utils.data_fetcher import clamp_period, generate_mock_ohlcv, normalize_ohlcv
 
 INITIAL_CAPITAL = 10_000.0
@@ -55,11 +55,15 @@ def parse_params(params: dict) -> tuple[str, str, StrategyParams]:
         raise ValueError("fee_bps deve essere un numero") from exc
     if not 0 <= fee <= 500:
         raise ValueError("fee_bps deve essere tra 0 e 500")
+    execution = str(params.get("execution", "next_open")).strip()
+    if execution not in EXECUTIONS:
+        raise ValueError(f"execution deve essere uno di {list(EXECUTIONS)}, ricevuto {execution!r}")
     strat = StrategyParams(
         short_window=_int(params, "short_window", 20, 1, 400),
         long_window=_int(params, "long_window", 50, 2, 500),
         initial_capital=INITIAL_CAPITAL,
         fee_bps=fee,
+        execution=execution,
     )
     return symbol, period, strat
 

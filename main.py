@@ -179,11 +179,12 @@ async def run_backtest(
     long_window: int = Query(default=settings.long_window, ge=2, le=500),
     period: str = Query(default="2y", pattern=r"^(1mo|3mo|6mo|1y|2y|5y|10y|ytd|max)$"),
     fee_bps: float = Query(default=settings.fee_bps, ge=0, le=500),
+    execution: str = Query(default="next_open", pattern=r"^(next_open|close)$"),
 ) -> dict:
     try:
         params = StrategyParams(
             short_window=short_window, long_window=long_window,
-            initial_capital=settings.initial_capital, fee_bps=fee_bps,
+            initial_capital=settings.initial_capital, fee_bps=fee_bps, execution=execution,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -207,6 +208,7 @@ async def backtest_costs(
     long_window: int = Query(default=settings.long_window, ge=2, le=500),
     period: str = Query(default="2y", pattern=r"^(1mo|3mo|6mo|1y|2y|5y|10y|ytd|max)$"),
     fee_bps: float = Query(default=settings.fee_bps, ge=0, le=500),
+    execution: str = Query(default="next_open", pattern=r"^(next_open|close)$"),
 ) -> dict:
     """Sensibilità ai costi: rendimento con commissioni ×1/×2/×3 e slippage 0 o 5 bps."""
     from strategy.research import cost_sensitivity
@@ -214,7 +216,7 @@ async def backtest_costs(
     try:
         params = StrategyParams(
             short_window=short_window, long_window=long_window,
-            initial_capital=settings.initial_capital, fee_bps=fee_bps,
+            initial_capital=settings.initial_capital, fee_bps=fee_bps, execution=execution,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

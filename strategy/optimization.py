@@ -24,7 +24,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from strategy.quant_model import BaseStrategy
+from strategy.quant_model import BaseStrategy, _reference_price, _returns_core, check_execution
 
 _KEPT = ("total_return_pct", "cagr_pct", "sharpe_ratio", "max_drawdown_pct", "num_trades")
 
@@ -159,8 +159,10 @@ def sma_grid_vectorized(
     Le medie mobili si calcolano una volta per finestra (con pandas, come la
     strategia, per avere gli stessi confronti), poi segnali, posizioni, costi,
     equity e metriche di tutte le coppie short < long stanno in matrici numpy
-    (coppie × barre). Stesse regole del backtest: posizione in t = segnale di
-    t-1, `fee_bps` su ogni cambio di posizione.
+    (coppie × barre). Stesse regole e stessa formula del backtest
+    (`quant_model._returns_core`): posizione in t = segnale di t-1, eseguita
+    all'open di t o al close di t-1 secondo `base_params.execution`, `fee_bps`
+    sulla barra d'esecuzione; i trade si contano sui cambi della posizione detenuta.
     """
     from strategy.metrics import effective_bars_per_year
 
@@ -168,6 +170,9 @@ def sma_grid_vectorized(
     pairs = [(s, l) for s in shorts for l in longs if 1 <= s < l and l >= 2 and l <= len(data)]
     if not pairs:
         return []
+    execution = check_execution(getattr(base_params, "execution", "next_open"))
+    if execution == "next_open" and "open" not in data.columns:
+        raise ValueError("Con execution='next_open' serve la colonna 'open'; senza open usa execution='close'.")
     close = data["close"].astype(float)
     n = len(close)
     windows = sorted({w for p in pairs for w in p})
@@ -182,10 +187,10 @@ def sma_grid_vectorized(
 
     held = np.zeros_like(signal)
     held[:, 1:] = signal[:, :-1]
-    turnover = np.abs(np.diff(held, axis=1, prepend=0.0))
-    asset_ret = close.pct_change().fillna(0.0).to_numpy()
-    fee = base_params.fee_bps / 10_000
-    ret = held * asset_ret - turnover * fee
+    close_np = close.to_numpy()
+    open_np = data["open"].to_numpy(dtype=float) if "open" in data.columns else None
+    ref, _ = _reference_price(close_np, open_np, execution)
+    ret, turnover, _ = _returns_core(close_np, ref, held, base_params.fee_bps / 10_000, 0.0)
     capital = float(base_params.initial_capital)
     equity = capital * np.cumprod(1 + ret, axis=1)
 
@@ -200,7 +205,7 @@ def sma_grid_vectorized(
     with np.errstate(divide="ignore", invalid="ignore"):
         sharpe = np.where(std > 0, excess.mean(axis=1) / std * np.sqrt(bpy), 0.0)
     max_dd = (equity / np.maximum.accumulate(equity, axis=1) - 1).min(axis=1)
-    trades = (np.diff(signal, axis=1) != 0).sum(axis=1)
+    trades = (turnover != 0).sum(axis=1)
 
     out = []
     for i, (s, l) in enumerate(pairs):

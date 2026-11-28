@@ -27,7 +27,7 @@ from typing import Iterable, Sequence
 import numpy as np
 import pandas as pd
 
-from strategy.quant_model import BaseStrategy, StrategyParams, compute_metrics
+from strategy.quant_model import BaseStrategy, StrategyParams, check_execution, compute_metrics, position_returns
 
 _OBJECTIVES = {"sharpe": "sharpe_ratio", "total_return": "total_return_pct"}
 
@@ -91,6 +91,7 @@ class WindowResult:
     turnover: pd.Series       # cambi di posizione, compresa la liquidazione finale
     close: pd.Series
     asset_returns: pd.Series  # rendimento dell'asset per barra (0 alla prima)
+    prices: pd.Series         # prezzo d'esecuzione per barra (conta dove la posizione cambia)
 
 
 def window_returns(strategy: BaseStrategy, data: pd.DataFrame, start: int, stop: int) -> WindowResult:
@@ -99,35 +100,41 @@ def window_returns(strategy: BaseStrategy, data: pd.DataFrame, start: int, stop:
 
     Gli indicatori usano lo storico dall'inizio dei dati (riscaldamento) ma
     **nessuna** barra da `stop` in poi. La finestra parte senza posizione e
-    chiude la posizione sull'ultima barra, pagando i costi di entrambe le
-    operazioni (come i fold di test di Vibe-Trading). Resta la regola di QTS:
-    posizione in t = segnale di t-1.
+    chiude la posizione al close dell'ultima barra, pagando i costi di entrambe
+    le operazioni (come i fold di test di Vibe-Trading). Rendimenti e prezzi
+    vengono da `position_returns`, la stessa formula del backtest: posizione in
+    t = segnale di t-1, eseguito all'open di t (`execution="next_open"`) o al
+    close di t-1 (`"close"`).
     """
     if not 0 <= start < stop <= len(data):
         raise ValueError(f"Finestra non valida: [{start}, {stop}) su {len(data)} barre.")
+    p = strategy.params
+    execution = check_execution(getattr(p, "execution", "next_open"))
     sig = strategy.generate_signals(data.iloc[:stop])
+    if execution == "next_open" and "open" not in sig.columns:
+        raise ValueError("Con execution='next_open' serve la colonna 'open'; senza open usa execution='close'.")
     held = sig["signal"].shift(1).fillna(0.0).astype(float).iloc[start:stop].copy()
     held.iloc[0] = 0.0
     close = sig["close"].iloc[start:stop]
+    open_ = sig["open"].iloc[start:stop] if "open" in sig.columns else None
     asset_ret = close.pct_change().fillna(0.0)
-    turnover = held.diff().abs().fillna(0.0)
-    turnover.iloc[-1] += abs(held.iloc[-1])           # liquidazione a fine finestra
-    fee = strategy.params.fee_bps / 10_000
-    returns = held * asset_ret - turnover * fee
-    return WindowResult(returns=returns, positions=held, turnover=turnover, close=close, asset_returns=asset_ret)
+    returns, turnover, prices = position_returns(close, open_, held, p.fee_bps, execution)
+    # Liquidazione a fine finestra: al close dell'ultima barra, con la sua commissione.
+    last = abs(held.iloc[-1])
+    turnover.iloc[-1] += last
+    returns.iloc[-1] = (1 + returns.iloc[-1]) * (1 - p.fee_bps / 10_000 * last) - 1
+    return WindowResult(returns=returns, positions=held, turnover=turnover, close=close, asset_returns=asset_ret,
+                        prices=prices)
 
 
 def _window_trades(w: WindowResult) -> pd.DataFrame:
     """
-    Trade della finestra con le stesse convenzioni del backtest principale.
-
-    La posizione detenuta cambia sulla barra dopo il segnale, quindi il prezzo
-    è il close della barra del segnale (barra precedente). La liquidazione di
-    fine finestra avviene al close dell'ultima barra.
+    Trade della finestra: una riga per ogni cambio della posizione detenuta,
+    sulla barra d'esecuzione e al prezzo eseguito P_t (l'open della barra con
+    `next_open`). La liquidazione di fine finestra avviene al close dell'ultima barra.
     """
     change = w.positions.diff().fillna(w.positions)
-    price = w.close.shift(1)
-    rows = [(ts, "BUY" if c > 0 else "SELL", price.loc[ts]) for ts, c in change[change != 0].items()]
+    rows = [(ts, "BUY" if c > 0 else "SELL", w.prices.loc[ts]) for ts, c in change[change != 0].items()]
     if w.positions.iloc[-1] > 0:
         rows.append((w.close.index[-1], "SELL", w.close.iloc[-1]))
     idx = pd.DatetimeIndex([r[0] for r in rows], name=w.close.index.name)

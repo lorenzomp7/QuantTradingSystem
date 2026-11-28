@@ -84,9 +84,23 @@ QuantTradingSystem/
 ```
 SMA_short > SMA_long  ->  signal = 1 (long)
 SMA_short <= SMA_long ->  signal = 0 (flat)
-posizione detenuta(t) = signal(t-1)        # niente look-ahead
-rendimento(t) = posizione(t) * r_asset(t) - |Δposizione(t)| * fee_bps / 10000
+h(t) = signal(t-1)                         # posizione detenuta: niente look-ahead
+P(t) = open(t)                             # prezzo d'esecuzione (execution = "next_open")
+r(t) = (1 + h(t-1)·(P(t)/close(t-1) − 1)) · (1 + h(t)·(close(t)/P(t) − 1)) · (1 − c·|h(t) − h(t-1)|) − 1
+       con c = fee_bps / 10000
 ```
+
+L'ordine nato dal segnale della barra t-1 si esegue all'**open della barra t**: sulla barra
+d'ingresso la strategia guadagna open→close, su quella d'uscita close precedente→open, e il
+salto tra il close del segnale e l'open successivo non è suo. La commissione cade sulla barra
+d'esecuzione. I trade hanno la data della barra d'esecuzione e il suo open come prezzo. Un
+segnale che cambia sull'ultima barra non si esegue: compare in `pending_order`. Se l'open di
+una barra manca si usa il close precedente (`open_missing_bars` le conta); senza colonna
+`open` il backtest chiede `execution="close"`.
+
+`execution="close"` (parametro di `StrategyParams`, di `/api/backtest` e del sito senza
+server) esegue al close della barra del segnale, P(t) = close(t-1): è il «cheat-on-close» di
+Backtrader, tenuto solo per confronto con i risultati precedenti.
 
 ### Endpoint di controllo protetti
 
@@ -128,15 +142,18 @@ Sugli stessi dati mock (2 anni: 504 sedute per SPY, 730 giorni 24/7 per BTC; 10.
 
 | Dati | Strategia | Rend. % | CAGR % | Sharpe | Max DD % | Trade | Buy & Hold % |
 |---|---|---:|---:|---:|---:|---:|---:|
-| SPY | SMA 20/50 | 0,69 | 0,34 | 0,09 | −14,65 | 9 | 1,08 |
-| SPY | RSI/MACD fuzzy | 5,03 | 2,49 | 0,24 | −19,11 | 16 | 1,08 |
-| BTC-USD | SMA 20/50 | 48,42 | 21,83 | 1,17 | −15,27 | 14 | 81,42 |
-| BTC-USD | RSI/MACD fuzzy | 38,54 | 17,70 | 0,99 | −14,01 | 27 | 81,42 |
+| SPY | SMA 20/50 | 1,06 | 0,53 | 0,11 | −14,48 | 9 | 1,08 |
+| SPY | RSI/MACD fuzzy | 6,25 | 3,08 | 0,28 | −19,11 | 16 | 1,08 |
+| BTC-USD | SMA 20/50 | 46,94 | 21,22 | 1,14 | −15,26 | 14 | 81,42 |
+| BTC-USD | RSI/MACD fuzzy | 36,09 | 16,66 | 0,94 | −13,70 | 27 | 81,42 |
+
+Esecuzione all'open della barra dopo il segnale (`next_open`). Con `execution="close"`, la
+regola usata fino alla rev. 48, le stesse righe davano rendimento 0,69 / 5,03 / 48,42 / 38,54.
 
 Sono dati sintetici: la tabella mostra che le due strategie funzionano con lo stesso
 backtest, non che una renda più dell'altra sul mercato vero. Sul mock SPY la griglia SMA
-(90 combinazioni) trova 30/71 con Sharpe 1,09; l'algoritmo genetico (seme 7, 117
-valutazioni) trova 29/72 con Sharpe 1,14, in campione.
+(90 combinazioni) trova 30/71 con Sharpe 1,08; l'algoritmo genetico (seme 7, 116
+valutazioni) trova 30/69 con Sharpe 1,10, in campione.
 
 ### Griglia di parametri: ciclo contro versione vettorizzata (punto 15)
 
@@ -146,10 +163,10 @@ verifica e misura i tempi (5 ripetizioni; ogni misura dura almeno 0,5 s):
 
 | Mock SPY 5 anni, 1260 barre, 617 coppie | Tempo per griglia (mediana) | Scarto | Picco memoria |
 |---|---:|---:|---:|
-| Ciclo (`grid_search`) | 3,08 s | 2,7% | 0,8 MB |
-| Vettorizzata (`sma_grid_vectorized`) | 0,032 s | 6,4% | 62,7 MB |
+| Ciclo (`grid_search`) | 1,90 s | 3,4% | 0,8 MB |
+| Vettorizzata (`sma_grid_vectorized`) | 0,037 s | 2,8% | 81,4 MB |
 
-Circa 96× più veloce, al prezzo di più memoria (matrici coppie × barre): con griglie
+Circa 52× più veloce, al prezzo di più memoria (matrici coppie × barre): con griglie
 molto grandi sulla VM conviene dividerle a blocchi. Profilo con
 [flameox](https://github.com/morluto/flameox) e py-spy: il ciclo spende il tempo
 nell'overhead di pandas di ogni singolo backtest.
@@ -170,11 +187,13 @@ python3.11 -m venv ~/.venvs/vibe && ~/.venvs/vibe/bin/pip install vibe-trading-a
 python tools/compare_external.py --vibe-python ~/.venvs/vibe/bin/python    # 0 = differenze in tolleranza
 ```
 
-I dati del confronto hanno open(t) = close(t-1), così l'esecuzione al close della barra del
-segnale (QTS) e all'open della barra dopo (Vibe-Trading) avvengono allo stesso prezzo; la
-chiusura forzata di fine backtest di Vibe-Trading viene addebitata anche a QTS. Sul mock
-BTC-USD 2 anni (SMA 20/50, 5 bps) l'equity finale differisce dello 0,0010%, sul mock SPY
-5 anni (SMA 10/30, 10 bps) dello 0,0033%, con gli stessi trade.
+QTS e Vibe-Trading eseguono entrambi all'open della barra dopo il segnale; i dati del
+confronto hanno in più open(t) = close(t-1), così il prezzo è lo stesso anche con
+`execution="close"`. La chiusura forzata di fine backtest di Vibe-Trading viene addebitata
+anche a QTS. **Confronto da rieseguire**: i numeri che seguono sono della rev. 48, quando QTS
+eseguiva al close del segnale e sottraeva la commissione invece di moltiplicarla; con la nuova
+formula non sono stati ricalcolati. Sul mock BTC-USD 2 anni (SMA 20/50, 5 bps) l'equity finale
+differiva dello 0,0010%, sul mock SPY 5 anni (SMA 10/30, 10 bps) dello 0,0033%, con gli stessi trade.
 
 ```python
 from strategy.research import walk_forward

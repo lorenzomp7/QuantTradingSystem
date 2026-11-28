@@ -15,9 +15,12 @@ Strategia di esempio: **Moving Average Crossover** (long-only).
     Death cross : signal passa da 1 a 0  -> SELL
 
 Il backtest è vettorizzato con Pandas/NumPy ed evita il *look-ahead bias*:
-il segnale calcolato sulla chiusura del giorno t viene eseguito sulla barra
-t+1 (posizione = signal.shift(1)). I costi di transazione sono modellati in
-basis point su ogni variazione di posizione.
+il segnale calcolato sulla chiusura della barra t diventa un ordine eseguito
+all'**open della barra t+1** (posizione = signal.shift(1), `execution =
+"next_open"`). Con `execution = "close"` l'ordine si esegue al close della
+barra del segnale: è il «cheat-on-close» di Backtrader, lasciato solo per
+confronto. I costi di transazione sono in basis point su ogni variazione di
+posizione e cadono sulla barra d'esecuzione (vedi `position_returns`).
 
 Per aggiungere nuove strategie basta estendere `BaseStrategy` e
 implementare `generate_signals()`: backtest e metriche sono riutilizzati.
@@ -37,6 +40,17 @@ from strategy.metrics import DEFAULT_BARS_PER_YEAR, effective_bars_per_year, rou
 # di barre l'anno del mercato e dell'intervallo (vedi strategy/metrics.py).
 TRADING_DAYS_PER_YEAR = DEFAULT_BARS_PER_YEAR
 
+# Regole d'esecuzione degli ordini: all'open della barra dopo il segnale
+# (predefinita) oppure al close della barra del segnale (solo per confronto).
+EXECUTIONS = ("next_open", "close")
+
+
+def check_execution(execution: str) -> str:
+    """Valida la regola d'esecuzione (`ValueError` se non è tra `EXECUTIONS`)."""
+    if execution not in EXECUTIONS:
+        raise ValueError(f"execution deve essere uno di {list(EXECUTIONS)}, ricevuto {execution!r}.")
+    return execution
+
 
 # ============================================================== Parametri
 @dataclass
@@ -46,6 +60,7 @@ class StrategyParams:
     initial_capital: float = 10_000.0
     fee_bps: float = 5.0            # costo per trade in basis point (5 bps = 0.05%)
     risk_free_rate: float = 0.0     # tasso risk-free annuo per lo Sharpe ratio
+    execution: str = "next_open"    # "next_open" (open della barra dopo il segnale) o "close"
 
     def __post_init__(self) -> None:
         if self.short_window < 1 or self.long_window < 2:
@@ -56,6 +71,7 @@ class StrategyParams:
             raise ValueError("initial_capital deve essere > 0.")
         if self.fee_bps < 0:
             raise ValueError("fee_bps non può essere negativo.")
+        check_execution(self.execution)
 
 
 @dataclass
@@ -139,28 +155,37 @@ class BaseStrategy(ABC):
         Backtest vettorizzato. `bars_per_year` è il fattore di annualizzazione
         (es. `metrics.bars_per_year("5m", "crypto")`); se manca si misura
         dalle date della serie.
+
+        Il segnale della barra t si esegue sulla barra t+1, al suo open
+        (`execution="next_open"`) o al close di t (`"close"`). Un segnale che
+        cambia sull'ultima barra non si esegue: resta in `pending_order`.
         """
         p = self.params
+        execution = check_execution(getattr(p, "execution", "next_open"))
         sig = self.generate_signals(data)
+        if execution == "next_open" and "open" not in sig.columns:
+            raise ValueError(
+                "Con execution='next_open' serve la colonna 'open'; senza open usa execution='close'."
+            )
+        open_ = sig["open"] if "open" in sig.columns else None
 
         # Rendimenti semplici dell'asset.
         asset_ret = sig["close"].pct_change().fillna(0.0)
 
-        # Posizione effettivamente detenuta: segnale di ieri (no look-ahead).
-        held = sig["signal"].shift(1).fillna(0.0)
+        # Posizione effettivamente detenuta: segnale della barra prima (no look-ahead).
+        held = sig["signal"].shift(1).fillna(0.0).astype(float)
         sig["in_market"] = held.astype(int)
 
-        # Costi: fee_bps applicati ad ogni cambio di posizione (turnover).
-        turnover = held.diff().abs().fillna(held.abs())
-        costs = turnover * (p.fee_bps / 10_000)
-
-        strat_ret = held * asset_ret - costs
+        # Rendimenti, cambi di posizione e prezzo eseguito: commissione sulla barra d'esecuzione.
+        strat_ret, turnover, price = position_returns(sig["close"], open_, held, p.fee_bps, execution)
         equity = p.initial_capital * (1 + strat_ret).cumprod()
         equity.name = "equity"
 
-        trades = sig.loc[sig["position"] != 0, ["close", "position"]].copy()
-        trades["side"] = np.where(trades["position"] > 0, "BUY", "SELL")
-        trades = trades.rename(columns={"close": "price"})[["side", "price"]]
+        trades = _trades_from_positions(held, price, execution)
+
+        # Segnale cambiato sull'ultima barra: ordine in attesa, non un trade.
+        diff = int(sig["signal"].iloc[-1]) - int(held.iloc[-1])
+        pending = "BUY" if diff > 0 else "SELL" if diff < 0 else None
 
         metrics = compute_metrics(
             strategy_returns=strat_ret,
@@ -171,9 +196,115 @@ class BaseStrategy(ABC):
             risk_free_rate=p.risk_free_rate,
             bars_per_year=bars_per_year,
         )
+        metrics["pending_order"] = pending
+        metrics["open_missing_bars"] = (
+            int(_reference_price(sig["close"].to_numpy(dtype=float), open_.to_numpy(dtype=float), execution)[1].sum())
+            if execution == "next_open" else 0
+        )
         metrics["strategy"] = self.name
         metrics["params"] = asdict(p)
         return BacktestResult(metrics=metrics, equity_curve=equity, trades=trades, signals=sig)
+
+
+# ============================================================= Esecuzione
+def _reference_price(close: np.ndarray, open_: np.ndarray | None, execution: str) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Prezzo di riferimento R_t dell'ordine eseguito sulla barra t e barre senza open valido.
+
+    `next_open`: R_t = open(t); se l'open manca (NaN o <= 0) si ripiega su
+    close(t-1). `close`: R_t = close(t-1). Sulla prima barra non c'è un close
+    precedente e si usa il close della barra stessa.
+    """
+    prev_close = np.empty_like(close)
+    prev_close[0] = close[0]
+    prev_close[1:] = close[:-1]
+    if execution == "close":
+        return prev_close, np.zeros(close.shape, dtype=bool)
+    if open_ is None:
+        raise ValueError("Con execution='next_open' serve la serie degli open; senza open usa execution='close'.")
+    with np.errstate(invalid="ignore"):
+        missing = ~(open_ > 0)                       # NaN o non positivo
+    return np.where(missing, prev_close, open_), missing
+
+
+def _returns_core(close: np.ndarray, ref: np.ndarray, held: np.ndarray, fee: float, slip: float):
+    """
+    Formula unica del backtest, in numpy. `close` e `ref` hanno una riga
+    (barre); `held` può avere più righe (una per combinazione di parametri).
+
+    Con h = posizione detenuta, Δ_t = h_t − h_{t-1} (h prima della serie = 0):
+        P_t = R_t · (1 + slip · segno(Δ_t))            prezzo eseguito
+        g_t = P_t / C_{t-1} − 1  (0 sulla prima barra)  dal close precedente all'esecuzione
+        d_t = C_t / P_t − 1                             dall'esecuzione al close
+        r_t = (1 + h_{t-1}·g_t) · (1 + h_t·d_t) · (1 − fee·|Δ_t|) − 1
+    """
+    prev_held = np.zeros_like(held)
+    prev_held[..., 1:] = held[..., :-1]
+    delta = held - prev_held
+    price = ref * (1 + slip * np.sign(delta))
+    prev_close = np.empty_like(close)
+    prev_close[0] = close[0]
+    prev_close[1:] = close[:-1]
+    gap = price / prev_close - 1
+    gap[..., 0] = 0.0
+    intrabar = close / price - 1
+    turnover = np.abs(delta)
+    returns = (1 + prev_held * gap) * (1 + held * intrabar) * (1 - fee * turnover) - 1
+    return returns, turnover, price
+
+
+def position_returns(
+    close: pd.Series,
+    open_: pd.Series | None,
+    held: pd.Series,
+    fee_bps: float,
+    execution: str = "next_open",
+    slippage_bps: float = 0.0,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """
+    Rendimenti per barra di una posizione `held` (h_t = segnale di t-1).
+
+    Restituisce (rendimenti, turnover, prezzo d'esecuzione). L'ordine nato dal
+    segnale di t-1 si esegue sulla barra t al prezzo di riferimento R_t:
+    open(t) con `next_open`, close(t-1) con `close`; lo slippage lo sposta a
+    sfavore (acquisto più caro, vendita più bassa). Quindi:
+
+        barra d'ingresso  (C_t / P_t)·(1 − c) − 1
+        barra d'uscita    (P_t / C_{t-1})·(1 − c) − 1
+        in posizione      C_t / C_{t-1} − 1
+        flat              0
+
+    con c = fee_bps / 10000, pagata in forma moltiplicativa sulla barra
+    d'esecuzione. Un open mancante (NaN o <= 0) è sostituito dal close
+    precedente. È la stessa formula usata da `backtest`, da
+    `research.window_returns` e, in matrice, da `optimization.sma_grid_vectorized`.
+    """
+    check_execution(execution)
+    if fee_bps < 0 or slippage_bps < 0:
+        raise ValueError("fee_bps e slippage_bps non possono essere negativi.")
+    c = close.to_numpy(dtype=float)
+    o = None if open_ is None else open_.to_numpy(dtype=float)
+    ref, _ = _reference_price(c, o, execution)
+    returns, turnover, price = _returns_core(c, ref, held.to_numpy(dtype=float), fee_bps / 10_000,
+                                             slippage_bps / 10_000)
+    idx = close.index
+    return (pd.Series(returns, index=idx), pd.Series(turnover, index=idx), pd.Series(price, index=idx))
+
+
+def _trades_from_positions(held: pd.Series, price: pd.Series, execution: str) -> pd.DataFrame:
+    """
+    Una riga per ogni cambio della posizione detenuta (BUY o SELL).
+
+    `next_open`: data della barra d'esecuzione e prezzo eseguito (il suo open).
+    `close`: data della barra del segnale (quella prima) e il suo close.
+    """
+    delta = held.diff().fillna(held).to_numpy()
+    where = np.flatnonzero(delta != 0)
+    when = where if execution == "next_open" else np.maximum(where - 1, 0)
+    return pd.DataFrame(
+        {"side": np.where(delta[where] > 0, "BUY", "SELL"), "price": price.to_numpy()[where]},
+        index=held.index[when],
+    )
 
 
 class MovingAverageCrossover(BaseStrategy):

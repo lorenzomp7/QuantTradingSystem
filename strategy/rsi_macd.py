@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 
 from strategy.indicators import macd_histogram, rsi, stochastic_k
-from strategy.quant_model import BaseStrategy
+from strategy.quant_model import BaseStrategy, check_execution
 
 # Ampiezza di base delle gaussiane, moltiplicata per `sigma`.
 _RSI_WIDTH = 10.0
@@ -64,6 +64,7 @@ class RsiMacdParams:
     initial_capital: float = 10_000.0
     fee_bps: float = 5.0
     risk_free_rate: float = 0.0
+    execution: str = "next_open"   # "next_open" (open della barra dopo il segnale) o "close"
 
     def __post_init__(self) -> None:
         for name in ("rsi_window", "macd_fast", "macd_slow", "macd_signal", "sto_k", "norm_window"):
@@ -85,6 +86,7 @@ class RsiMacdParams:
             raise ValueError("initial_capital deve essere > 0.")
         if self.fee_bps < 0:
             raise ValueError("fee_bps non può essere negativo.")
+        check_execution(self.execution)
 
 
 class RsiMacdFuzzy(BaseStrategy):

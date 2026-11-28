@@ -23,7 +23,15 @@ description: Procedura per aggiungere o modificare una strategia, il backtest o 
 
 ## 3. Regole che non si cambiano
 - La posizione detenuta in t è il segnale di t-1 (`shift(1)` in `backtest`).
-- I costi sono `fee_bps` sul turnover a ogni cambio di posizione.
+- L'ordine si esegue all'open della barra t (`execution="next_open"`, predefinito): la barra
+  d'ingresso rende open→close, quella d'uscita close precedente→open. `execution="close"`
+  (close della barra del segnale) serve solo per confronto: non usarlo per presentare risultati.
+- Rendimenti, costi e prezzi dei trade escono da una sola funzione, `position_returns`
+  (`strategy/quant_model.py`), usata anche da `research.window_returns` e, in matrice, da
+  `optimization.sma_grid_vectorized`: una modifica alla formula va fatta lì.
+- I costi sono `fee_bps` a ogni cambio di posizione, sulla barra d'esecuzione, in forma
+  moltiplicativa: `(1 − fee_bps/10000)`.
+- Un segnale che cambia sull'ultima barra non è un trade: va in `metrics["pending_order"]`.
 - Il bot live (`core/engine.py`) in intraday usa solo barre chiuse: l'ultima barra in
   formazione si scarta prima di `latest_signal`.
 - Il broker predefinito resta `paper`.
@@ -31,6 +39,8 @@ description: Procedura per aggiungere o modificare una strategia, il backtest o 
 ## 4. Test obbligatori (tests/test_quant_model.py)
 - Segnali uguali alla definizione su dati costruiti a mano (come `test_signals_match_sma_definition`).
 - Look-ahead: su una serie sempre crescente la prima barra con `signal == 1` non guadagna.
+- Esecuzione (`tests/test_execution.py`): su dati costruiti a mano il salto tra il close del
+  segnale e l'open successivo non è guadagnato e i trade hanno data e open della barra d'esecuzione.
 - Costi: con `fee_bps > 0` il rendimento è più basso che con `fee_bps = 0`.
 - Parametri non validi e dati insufficienti sollevano `ValueError`.
 - Solo dati mock o costruiti: nessuna chiamata di rete.
@@ -40,5 +50,8 @@ description: Procedura per aggiungere o modificare una strategia, il backtest o 
 - Riporta in tabella, sugli stessi dati mock e stesso capitale: rendimento totale, CAGR,
   Sharpe, max drawdown e numero di trade della strategia, accanto al Buy & Hold.
 - Se confronti con backtesting.py o Backtrader, usa stessi dati, commissioni e
-  regola di esecuzione (ordine alla chiusura di t, eseguito su t+1) e spiega le differenze.
+  regola di esecuzione (ordine deciso alla chiusura di t, eseguito all'open di t+1: `next_open`
+  di QTS, il predefinito di Backtrader e backtesting.py) e spiega le differenze.
+- Dichiara sempre la regola d'esecuzione usata (`metrics["params"]["execution"]`) e, se ci sono,
+  `pending_order` e `open_missing_bars`.
 - Non presentare un backtest come previsione di rendimenti futuri.

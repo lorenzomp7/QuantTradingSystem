@@ -122,7 +122,7 @@ def test_costs_endpoint():
         assert body["rows"][0]["bars_per_year"] == 252
 
 
-def test_window_trade_prices_use_signal_bar_close(data):
+def test_window_trade_prices_use_execution_bar_open(data):
     from strategy.research import _window_trades
 
     strat = MovingAverageCrossover(StrategyParams(short_window=5, long_window=20))
@@ -130,11 +130,15 @@ def test_window_trade_prices_use_signal_bar_close(data):
     trades = _window_trades(w)
     change = w.positions.diff().fillna(w.positions)
     first = change[change != 0].index[0]
-    i = w.close.index.get_loc(first)
-    # La posizione cambia sulla barra dopo il segnale: il prezzo è il close della barra del segnale.
-    assert trades.loc[first, "price"] == w.close.iloc[i - 1]
+    # La posizione cambia sulla barra dopo il segnale: l'ordine si esegue al suo open.
+    assert trades.loc[first, "price"] == data.loc[first, "open"]
     if w.positions.iloc[-1] > 0:
         assert trades.iloc[-1]["side"] == "SELL" and trades.iloc[-1]["price"] == w.close.iloc[-1]
+    # Con execution="close" il prezzo torna il close della barra del segnale (quella prima).
+    w_close = window_returns(MovingAverageCrossover(StrategyParams(short_window=5, long_window=20, execution="close")),
+                             data, 300, 400)
+    i = w_close.close.index.get_loc(first)
+    assert _window_trades(w_close).loc[first, "price"] == w_close.close.iloc[i - 1]
 
 
 def test_walk_forward_oos_has_buy_and_hold(data):

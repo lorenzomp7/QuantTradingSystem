@@ -146,7 +146,9 @@ def test_genetic_search_close_to_grid_optimum(data):
     ga = genetic_search(MovingAverageCrossover, data, space, base_params=StrategyParams(fee_bps=5),
                         population=24, generations=15, seed=7, bars_per_year=252)
     best_grid = grid[0]["score"]
-    assert ga["best"]["score"] >= best_grid - 0.15 * abs(best_grid)
+    # Tolleranza relativa con un minimo assoluto: con uno Sharpe migliore vicino a zero
+    # il 15% relativo sarebbe una soglia di pochi millesimi.
+    assert ga["best"]["score"] >= best_grid - max(0.15 * abs(best_grid), 0.15)
     s, l = ga["best"]["parameters"]["short_window"], ga["best"]["parameters"]["long_window"]
     assert 3 <= s <= 30 and 31 <= l <= 120 and isinstance(s, int)
     assert len(ga["history"]) == 15

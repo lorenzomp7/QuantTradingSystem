@@ -112,6 +112,31 @@ def test_static_backtest_matches_the_api_on_mock_data(symbol):
     assert static_api.costs(q, None)["rows"] == api_costs["rows"]
 
 
+@pytest.mark.parametrize("execution", ["next_open", "close"])
+def test_static_and_api_execution_param_equal(execution):
+    import main
+
+    q = {"symbol": "SPY", "short_window": "10", "long_window": "30", "period": "2y", "execution": execution}
+    with TestClient(main.app) as client:
+        api = client.get("/api/backtest", params=q).json()
+        api_costs = client.get("/api/backtest/costs", params=q).json()
+        assert client.get("/api/backtest", params={**q, "execution": "vwap"}).status_code == 422
+    mine = static_api.backtest(q, None)
+    assert mine["metrics"] == api["metrics"] and mine["metrics"]["params"]["execution"] == execution
+    assert mine["equity_curve"] == api["equity_curve"] and mine["trades"] == api["trades"]
+    assert static_api.costs(q, None)["rows"] == api_costs["rows"]
+    with pytest.raises(ValueError):
+        static_api.backtest({**q, "execution": "vwap"}, None)
+
+
+def test_execution_modes_give_different_results_on_mock_data():
+    q = {"symbol": "SPY", "short_window": "10", "long_window": "30", "period": "2y"}
+    nxt = static_api.backtest(q, None)
+    cls = static_api.backtest({**q, "execution": "close"}, None)
+    assert nxt["metrics"]["total_return_pct"] != cls["metrics"]["total_return_pct"]
+    assert nxt["trades"][0]["price"] != cls["trades"][0]["price"]
+
+
 def test_static_backtest_uses_the_snapshot_and_slices_the_period():
     csv = _csv("SPY", "5y")
     out = static_api.backtest({"symbol": "SPY", "short_window": "20", "long_window": "50", "period": "1y"}, csv)
