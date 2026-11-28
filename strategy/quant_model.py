@@ -80,18 +80,25 @@ class BacktestResult:
     equity_curve: pd.Series = field(repr=False)
     trades: pd.DataFrame = field(repr=False)
     signals: pd.DataFrame = field(repr=False)
+    # Buy & Hold sullo stesso periodo, capitale e regola d'esecuzione della strategia.
+    benchmark_curve: pd.Series | None = field(default=None, repr=False)
 
     def to_dict(self, tail: int | None = None) -> dict:
         """
         Serializzazione JSON-friendly (per le API).
 
-        Ogni punto della curva include anche il benchmark Buy & Hold e il flag
-        `in_market` (posizione detenuta sulla barra): quando è 0 la strategia è
-        in liquidità e l'equity resta piatta, cosa che la dashboard evidenzia.
+        Ogni punto della curva include anche il benchmark Buy & Hold
+        (`benchmark_curve`: stesso inizio della strategia, commissione
+        d'ingresso compresa) e il flag `in_market` (posizione detenuta sulla
+        barra): quando è 0 la strategia è in liquidità e l'equity resta
+        piatta, cosa che la dashboard evidenzia. La curva parte dalla prima
+        barra valutata: il riscaldamento degli indicatori non c'è.
         """
         eq = self.equity_curve if tail is None else self.equity_curve.tail(tail)
-        close = self.signals["close"]
-        benchmark = self.metrics["initial_capital"] * close / close.iloc[0]
+        benchmark = self.benchmark_curve
+        if benchmark is None:                      # risultato costruito a mano, senza benchmark
+            close = self.signals["close"].loc[self.equity_curve.index]
+            benchmark = self.metrics["initial_capital"] * close / close.iloc[0]
         in_market = self.signals["in_market"]
         return {
             "metrics": self.metrics,
@@ -132,6 +139,14 @@ class BaseStrategy(ABC):
             position -> variazione di signal (+1 = BUY, -1 = SELL, 0 = hold)
         """
 
+    def warmup_bars(self) -> int:
+        """
+        Barre iniziali in cui gli indicatori non sono ancora definiti e la
+        strategia non può avere un segnale. Il backtest non le valuta: equity,
+        metriche e Buy & Hold partono dalla barra con questo indice.
+        """
+        return 0
+
     # -------------------------------------------------------- Live signal
     def latest_signal(self, data: pd.DataFrame) -> dict:
         """Ultimo segnale disponibile, usato dal bot live a ogni ciclo."""
@@ -150,7 +165,12 @@ class BaseStrategy(ABC):
         return out
 
     # ----------------------------------------------------------- Backtest
-    def backtest(self, data: pd.DataFrame, bars_per_year: int | None = None) -> BacktestResult:
+    def backtest(
+        self,
+        data: pd.DataFrame,
+        bars_per_year: int | None = None,
+        start: str | pd.Timestamp | None = None,
+    ) -> BacktestResult:
         """
         Backtest vettorizzato. `bars_per_year` è il fattore di annualizzazione
         (es. `metrics.bars_per_year("5m", "crypto")`); se manca si misura
@@ -159,6 +179,13 @@ class BaseStrategy(ABC):
         Il segnale della barra t si esegue sulla barra t+1, al suo open
         (`execution="next_open"`) o al close di t (`"close"`). Un segnale che
         cambia sull'ultima barra non si esegue: resta in `pending_order`.
+
+        La valutazione comincia dalla barra t0 = la più tarda tra il
+        riscaldamento (`warmup_bars()`) e `start` (data: prima barra con
+        indice >= start). Le barre prima servono solo agli indicatori: equity,
+        metriche, curva e Buy & Hold partono da t0, senza posizione; il primo
+        ordine possibile si esegue sulla barra t0+1. Il Buy & Hold compra su
+        t0+1 con la stessa regola d'esecuzione e la stessa commissione, e non vende.
         """
         p = self.params
         execution = check_execution(getattr(p, "execution", "next_open"))
@@ -167,19 +194,38 @@ class BaseStrategy(ABC):
             raise ValueError(
                 "Con execution='next_open' serve la colonna 'open'; senza open usa execution='close'."
             )
-        open_ = sig["open"] if "open" in sig.columns else None
 
-        # Rendimenti semplici dell'asset.
-        asset_ret = sig["close"].pct_change().fillna(0.0)
+        # Inizio della valutazione: dopo il riscaldamento e non prima di `start`.
+        n = len(sig)
+        warmup = int(self.warmup_bars())
+        first = 0 if start is None else int(sig.index.searchsorted(pd.Timestamp(start)))
+        t0 = max(warmup, first)
+        if t0 >= n:
+            raise ValueError(
+                f"Nessuna barra da valutare: {n} barre, riscaldamento {warmup}, inizio richiesto {start!r}."
+            )
 
-        # Posizione effettivamente detenuta: segnale della barra prima (no look-ahead).
-        held = sig["signal"].shift(1).fillna(0.0).astype(float)
-        sig["in_market"] = held.astype(int)
+        # Posizione effettivamente detenuta: segnale della barra prima (no look-ahead),
+        # nessuna posizione fino a t0 compresa.
+        held_all = sig["signal"].shift(1).fillna(0.0).astype(float)
+        held_all.iloc[: t0 + 1] = 0.0
+        sig["in_market"] = held_all.astype(int)
+
+        close = sig["close"].iloc[t0:]
+        open_ = sig["open"].iloc[t0:] if "open" in sig.columns else None
+        held = held_all.iloc[t0:]
 
         # Rendimenti, cambi di posizione e prezzo eseguito: commissione sulla barra d'esecuzione.
-        strat_ret, turnover, price = position_returns(sig["close"], open_, held, p.fee_bps, execution)
+        strat_ret, turnover, price = position_returns(close, open_, held, p.fee_bps, execution)
         equity = p.initial_capital * (1 + strat_ret).cumprod()
         equity.name = "equity"
+
+        # Buy & Hold sullo stesso periodo: compra sulla barra t0+1 come farebbe la strategia.
+        bench_held = pd.Series(1.0, index=close.index)
+        bench_held.iloc[0] = 0.0
+        bench_ret, _, _ = position_returns(close, open_, bench_held, p.fee_bps, execution)
+        benchmark = p.initial_capital * (1 + bench_ret).cumprod()
+        benchmark.name = "benchmark"
 
         trades = _trades_from_positions(held, price, execution)
 
@@ -189,21 +235,53 @@ class BaseStrategy(ABC):
 
         metrics = compute_metrics(
             strategy_returns=strat_ret,
-            asset_returns=asset_ret,
+            asset_returns=bench_ret,
             equity=equity,
             trades=trades,
             initial_capital=p.initial_capital,
             risk_free_rate=p.risk_free_rate,
             bars_per_year=bars_per_year,
         )
+        metrics["warmup_bars"] = warmup
+        metrics["data_start"] = sig.index[0].strftime("%Y-%m-%d")
         metrics["pending_order"] = pending
         metrics["open_missing_bars"] = (
-            int(_reference_price(sig["close"].to_numpy(dtype=float), open_.to_numpy(dtype=float), execution)[1].sum())
+            int(_reference_price(close.to_numpy(dtype=float), open_.to_numpy(dtype=float), execution)[1].sum())
             if execution == "next_open" else 0
         )
         metrics["strategy"] = self.name
         metrics["params"] = asdict(p)
-        return BacktestResult(metrics=metrics, equity_curve=equity, trades=trades, signals=sig)
+        return BacktestResult(metrics=metrics, equity_curve=equity, trades=trades, signals=sig,
+                              benchmark_curve=benchmark)
+
+
+class MovingAverageCrossover(BaseStrategy):
+    """Strategia trend-following basata sull'incrocio di due SMA."""
+
+    name = "moving_average_crossover"
+
+    def warmup_bars(self) -> int:
+        """La SMA lunga è definita dalla barra `long_window − 1`."""
+        return self.params.long_window - 1
+
+    def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
+        if "close" not in data.columns:
+            raise ValueError("Il DataFrame deve contenere la colonna 'close'.")
+        if len(data) < self.params.long_window:
+            raise ValueError(
+                f"Dati insufficienti: servono almeno {self.params.long_window} barre, "
+                f"ricevute {len(data)}."
+            )
+
+        df = data.copy()
+        df["sma_short"] = df["close"].rolling(self.params.short_window, min_periods=self.params.short_window).mean()
+        df["sma_long"] = df["close"].rolling(self.params.long_window, min_periods=self.params.long_window).mean()
+
+        # Segnale valido solo quando entrambe le medie sono definite.
+        valid = df["sma_long"].notna()
+        df["signal"] = np.where(valid & (df["sma_short"] > df["sma_long"]), 1, 0)
+        df["position"] = df["signal"].diff().fillna(0).astype(int)
+        return df
 
 
 # ============================================================= Esecuzione
@@ -307,31 +385,6 @@ def _trades_from_positions(held: pd.Series, price: pd.Series, execution: str) ->
     )
 
 
-class MovingAverageCrossover(BaseStrategy):
-    """Strategia trend-following basata sull'incrocio di due SMA."""
-
-    name = "moving_average_crossover"
-
-    def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
-        if "close" not in data.columns:
-            raise ValueError("Il DataFrame deve contenere la colonna 'close'.")
-        if len(data) < self.params.long_window:
-            raise ValueError(
-                f"Dati insufficienti: servono almeno {self.params.long_window} barre, "
-                f"ricevute {len(data)}."
-            )
-
-        df = data.copy()
-        df["sma_short"] = df["close"].rolling(self.params.short_window, min_periods=self.params.short_window).mean()
-        df["sma_long"] = df["close"].rolling(self.params.long_window, min_periods=self.params.long_window).mean()
-
-        # Segnale valido solo quando entrambe le medie sono definite.
-        valid = df["sma_long"].notna()
-        df["signal"] = np.where(valid & (df["sma_short"] > df["sma_long"]), 1, 0)
-        df["position"] = df["signal"].diff().fillna(0).astype(int)
-        return df
-
-
 # ================================================================ Metriche
 def compute_metrics(
     strategy_returns: pd.Series,
@@ -347,7 +400,9 @@ def compute_metrics(
 
     Annualizzate con `bars_per_year` barre l'anno; se è None il fattore si
     misura dalle date (`effective_bars_per_year`), come fa Vibe-Trading per
-    le serie di cui non si conosce il mercato.
+    le serie di cui non si conosce il mercato. `asset_returns` sono i
+    rendimenti per barra del benchmark sullo stesso periodo: il backtest passa
+    quelli del Buy & Hold con commissione d'ingresso.
     """
     n = len(strategy_returns)
     bpy = int(bars_per_year) if bars_per_year else effective_bars_per_year(strategy_returns.index)

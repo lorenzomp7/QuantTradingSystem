@@ -141,8 +141,11 @@ def test_static_backtest_uses_the_snapshot_and_slices_the_period():
     csv = _csv("SPY", "5y")
     out = static_api.backtest({"symbol": "SPY", "short_window": "20", "long_window": "50", "period": "1y"}, csv)
     assert out["data_source"] == "snapshot"
-    first, last = pd.Timestamp(out["equity_curve"][0]["date"]), pd.Timestamp(out["equity_curve"][-1]["date"])
+    # Il periodo richiesto è quello dei dati; la curva parte dopo il riscaldamento (SMA 50: 49 barre).
+    first, last = pd.Timestamp(out["metrics"]["data_start"]), pd.Timestamp(out["equity_curve"][-1]["date"])
     assert pd.Timedelta(days=360) <= last - first <= pd.Timedelta(days=366)
+    assert out["metrics"]["warmup_bars"] == 49
+    assert out["equity_curve"][0]["date"] == out["metrics"]["start"] > out["metrics"]["data_start"]
     full = static_api.backtest({"symbol": "SPY", "short_window": "20", "long_window": "50", "period": "max"}, csv)
     assert len(full["equity_curve"]) > len(out["equity_curve"])
 

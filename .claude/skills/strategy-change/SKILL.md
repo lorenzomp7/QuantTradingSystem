@@ -19,6 +19,8 @@ description: Procedura per aggiungere o modificare una strategia, il backtest o 
   medie centrate, niente indicatori calcolati sull'intera serie e poi riusati indietro.
 - Errori chiari (`ValueError`) per colonne mancanti o dati insufficienti, come la strategia esistente.
 - Nuovi parametri in `StrategyParams` con validazione in `__post_init__`.
+- `warmup_bars()`: indice della prima barra con tutti gli indicatori definiti (0 se non servono).
+  Il backtest valuta strategia e Buy & Hold solo da lì.
 - Non toccare `BaseStrategy.backtest`: applica già il ritardo di una barra e i costi.
 
 ## 3. Regole che non si cambiano
@@ -48,7 +50,9 @@ description: Procedura per aggiungere o modificare una strategia, il backtest o 
 ## 5. Verifica e resoconto
 - `python -m pytest -q` (parte anche dall'hook a fine turno).
 - Riporta in tabella, sugli stessi dati mock e stesso capitale: rendimento totale, CAGR,
-  Sharpe, max drawdown e numero di trade della strategia, accanto al Buy & Hold.
+  Sharpe, max drawdown e numero di trade della strategia, accanto al Buy & Hold
+  (`buy_and_hold_return_pct`: stesso inizio dopo il riscaldamento, stessa esecuzione, commissione
+  d'ingresso). Per confrontare strategie con riscaldamenti diversi passa lo stesso `start`.
 - Se confronti con backtesting.py o Backtrader, usa stessi dati, commissioni e
   regola di esecuzione (ordine deciso alla chiusura di t, eseguito all'open di t+1: `next_open`
   di QTS, il predefinito di Backtrader e backtesting.py) e spiega le differenze.

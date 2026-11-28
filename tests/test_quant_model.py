@@ -51,7 +51,9 @@ def test_backtest_has_no_lookahead():
 def test_backtest_metrics(data):
     res = MovingAverageCrossover().backtest(data)
     m = res.metrics
-    assert m["bars"] == len(data)
+    # Le barre valutate partono dalla prima con la SMA lunga definita (riscaldamento escluso).
+    assert m["warmup_bars"] == 49 and m["bars"] == len(data) - 49
+    assert m["start"] == data.index[49].strftime("%Y-%m-%d")
     assert m["max_drawdown_pct"] <= 0
     assert m["num_trades"] == len(res.trades)
     assert "equity_curve" in res.to_dict()

@@ -39,13 +39,13 @@ def _score(metrics: dict, objective: str) -> float:
     raise ValueError("objective deve essere 'sharpe', 'total_return' o 'thesis'.")
 
 
-def _evaluate(strategy_cls, base, data, overrides, objective, bars_per_year) -> dict | None:
+def _evaluate(strategy_cls, base, data, overrides, objective, bars_per_year, start=None) -> dict | None:
     try:
         params = replace(base, **overrides)
     except ValueError:
         return None                                  # combinazione non valida
     try:
-        m = strategy_cls(params).backtest(data, bars_per_year=bars_per_year).metrics
+        m = strategy_cls(params).backtest(data, bars_per_year=bars_per_year, start=start).metrics
     except ValueError:
         return None                                  # es. dati insufficienti per le finestre
     score = _score(m, objective)
@@ -61,13 +61,22 @@ def grid_search(
     base_params,
     objective: str = "sharpe",
     bars_per_year: int | None = None,
+    start: str | pd.Timestamp | None = None,
 ) -> list[dict]:
-    """Prova tutte le combinazioni valide di `grid`; restituisce i risultati dal migliore."""
+    """
+    Prova tutte le combinazioni valide di `grid`; restituisce i risultati dal migliore.
+
+    Ogni backtest valuta le barre dopo il proprio riscaldamento: senza un
+    `start` comune ogni combinazione è quindi valutata su un periodo diverso
+    (una SMA lunga 200 parte 150 barre dopo una lunga 50) e i punteggi non sono
+    del tutto confrontabili. Con `start` (una data) tutte partono dalla stessa
+    barra, purché sia oltre il riscaldamento più lungo della griglia.
+    """
     _score({"sharpe_ratio": 0.0, "total_return_pct": 0.0}, objective)   # valida l'obiettivo
     names = list(grid)
     out = []
     for values in itertools.product(*(grid[n] for n in names)):
-        r = _evaluate(strategy_cls, base_params, data, dict(zip(names, values)), objective, bars_per_year)
+        r = _evaluate(strategy_cls, base_params, data, dict(zip(names, values)), objective, bars_per_year, start)
         if r is not None:
             out.append(r)
     return sorted(out, key=lambda r: r["score"], reverse=True)
@@ -152,6 +161,7 @@ def sma_grid_vectorized(
     base_params,
     objective: str = "sharpe",
     bars_per_year: int | None = None,
+    start: str | pd.Timestamp | None = None,
 ) -> list[dict]:
     """
     Stessa griglia di `grid_search(MovingAverageCrossover, …)`, calcolata in blocco.
@@ -163,6 +173,11 @@ def sma_grid_vectorized(
     (`quant_model._returns_core`): posizione in t = segnale di t-1, eseguita
     all'open di t o al close di t-1 secondo `base_params.execution`, `fee_bps`
     sulla barra d'esecuzione; i trade si contano sui cambi della posizione detenuta.
+
+    Come nel backtest ogni coppia è valutata dalla barra `long − 1` (fine del
+    riscaldamento): senza un `start` comune ogni coppia ha quindi un periodo
+    diverso. Con `start` (una data) si parte dalla più tarda tra `start` e il
+    riscaldamento della coppia.
     """
     from strategy.metrics import effective_bars_per_year
 
@@ -185,25 +200,41 @@ def sma_grid_vectorized(
     with np.errstate(invalid="ignore"):
         signal = ((short_m > long_m) & ~np.isnan(long_m)).astype(float)
 
+    # Inizio della valutazione di ogni coppia: riscaldamento (long − 1) o `start`, il più tardo.
+    first = 0 if start is None else int(close.index.searchsorted(pd.Timestamp(start)))
+    if first >= n:
+        raise ValueError(f"Nessuna barra da valutare: {n} barre, inizio richiesto {start!r}.")
+    t0 = np.maximum(l_idx - 1, first)
+    bar = np.arange(n)
+    evaluated = bar[None, :] >= t0[:, None]
+    bars = n - t0
+
     held = np.zeros_like(signal)
     held[:, 1:] = signal[:, :-1]
+    held[bar[None, :] <= t0[:, None]] = 0.0                # senza posizione fino a t0 compresa
     close_np = close.to_numpy()
     open_np = data["open"].to_numpy(dtype=float) if "open" in data.columns else None
     ref, _ = _reference_price(close_np, open_np, execution)
     ret, turnover, _ = _returns_core(close_np, ref, held, base_params.fee_bps / 10_000, 0.0)
     capital = float(base_params.initial_capital)
-    equity = capital * np.cumprod(1 + ret, axis=1)
+    equity = capital * np.cumprod(1 + ret, axis=1)         # piatta a `capital` prima di t0
 
-    bpy = int(bars_per_year) if bars_per_year else effective_bars_per_year(close.index)
-    years = max(n / bpy, 1e-9)
+    if bars_per_year:
+        bpy = np.full(len(pairs), int(bars_per_year), dtype=float)
+    else:                                                  # misurato sulle barre valutate di ogni coppia
+        measured = {int(t): effective_bars_per_year(close.index[int(t):]) for t in np.unique(t0)}
+        bpy = np.array([measured[int(t)] for t in t0], dtype=float)
+    years = np.maximum(bars / bpy, 1e-9)
     final = equity[:, -1]
     total = final / capital - 1
     with np.errstate(divide="ignore", invalid="ignore"):
         cagr = np.where(final > 0, (final / capital) ** (1 / years) - 1, -1.0)
-    excess = ret - base_params.risk_free_rate / bpy
-    std = excess.std(axis=1)
+    # Media e deviazione standard solo sulle barre valutate.
+    excess = ret - (base_params.risk_free_rate / bpy)[:, None]
+    mean = (excess * evaluated).sum(axis=1) / bars
+    std = np.sqrt((((excess - mean[:, None]) ** 2) * evaluated).sum(axis=1) / bars)
     with np.errstate(divide="ignore", invalid="ignore"):
-        sharpe = np.where(std > 0, excess.mean(axis=1) / std * np.sqrt(bpy), 0.0)
+        sharpe = np.where(std > 0, mean / std * np.sqrt(bpy), 0.0)
     max_dd = (equity / np.maximum.accumulate(equity, axis=1) - 1).min(axis=1)
     trades = (turnover != 0).sum(axis=1)
 

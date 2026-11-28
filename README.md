@@ -98,6 +98,11 @@ segnale che cambia sull'ultima barra non si esegue: compare in `pending_order`. 
 una barra manca si usa il close precedente (`open_missing_bars` le conta); senza colonna
 `open` il backtest chiede `execution="close"`.
 
+Le prime barre, in cui gli indicatori non sono definiti (`warmup_bars`), non si valutano:
+equity, metriche (`start`, `bars`), curva e Buy & Hold partono dalla prima barra con indicatori
+pronti (o da `start`, se più tardi). `data_start` è la prima barra dei dati. Il backtest non
+scarica storico in più: con `period=1y` e SMA 50 le barre valutate sono circa 200.
+
 `execution="close"` (parametro di `StrategyParams`, di `/api/backtest` e del sito senza
 server) esegue al close della barra del segnale, P(t) = close(t-1): è il «cheat-on-close» di
 Backtrader, tenuto solo per confronto con i risultati precedenti.
@@ -142,18 +147,27 @@ Sugli stessi dati mock (2 anni: 504 sedute per SPY, 730 giorni 24/7 per BTC; 10.
 
 | Dati | Strategia | Rend. % | CAGR % | Sharpe | Max DD % | Trade | Buy & Hold % |
 |---|---|---:|---:|---:|---:|---:|---:|
-| SPY | SMA 20/50 | 1,06 | 0,53 | 0,11 | −14,48 | 9 | 1,08 |
-| SPY | RSI/MACD fuzzy | 6,25 | 3,08 | 0,28 | −19,11 | 16 | 1,08 |
-| BTC-USD | SMA 20/50 | 46,94 | 21,22 | 1,14 | −15,26 | 14 | 81,42 |
-| BTC-USD | RSI/MACD fuzzy | 36,09 | 16,66 | 0,94 | −13,70 | 27 | 81,42 |
+| SPY | SMA 20/50 | 1,06 | 0,59 | 0,11 | −14,48 | 9 | 13,96 |
+| SPY | RSI/MACD fuzzy | 6,25 | 3,62 | 0,30 | −19,11 | 16 | 17,43 |
+| BTC-USD | SMA 20/50 | 46,94 | 22,91 | 1,18 | −15,26 | 14 | 68,10 |
+| BTC-USD | RSI/MACD fuzzy | 36,09 | 18,70 | 0,99 | −13,70 | 27 | 82,75 |
 
 Esecuzione all'open della barra dopo il segnale (`next_open`). Con `execution="close"`, la
 regola usata fino alla rev. 48, le stesse righe davano rendimento 0,69 / 5,03 / 48,42 / 38,54.
 
+Ogni riga è valutata dalla fine del riscaldamento dei propri indicatori (`warmup_bars`: 49
+barre per SMA 20/50, 74 per RSI/MACD), e il Buy & Hold parte dalla stessa barra, compra con
+la stessa regola e paga la commissione d'ingresso: per questo è diverso tra le due strategie
+(455 e 430 barre valutate su SPY, 681 e 656 su BTC-USD). Prima il Buy & Hold partiva dalla
+barra 0 (1,08% su SPY, 81,42% su BTC-USD), con 49 o 74 barre che la strategia non poteva usare.
+Per confrontare strategie diverse sullo stesso periodo: `backtest(data, start="2025-06-01")`.
+
 Sono dati sintetici: la tabella mostra che le due strategie funzionano con lo stesso
 backtest, non che una renda più dell'altra sul mercato vero. Sul mock SPY la griglia SMA
-(90 combinazioni) trova 30/71 con Sharpe 1,08; l'algoritmo genetico (seme 7, 116
-valutazioni) trova 30/69 con Sharpe 1,10, in campione.
+(90 combinazioni) trova 30/71 con Sharpe 1,17; l'algoritmo genetico (seme 7, 113
+valutazioni) trova 30/70 con Sharpe 1,25, in campione. Senza un `start` comune ogni coppia è
+valutata dal proprio riscaldamento, quindi su un periodo diverso: `grid_search(…, start=…)`
+e `sma_grid_vectorized(…, start=…)` le mettono sulla stessa barra d'inizio.
 
 ### Griglia di parametri: ciclo contro versione vettorizzata (punto 15)
 
@@ -163,10 +177,10 @@ verifica e misura i tempi (5 ripetizioni; ogni misura dura almeno 0,5 s):
 
 | Mock SPY 5 anni, 1260 barre, 617 coppie | Tempo per griglia (mediana) | Scarto | Picco memoria |
 |---|---:|---:|---:|
-| Ciclo (`grid_search`) | 1,90 s | 3,4% | 0,8 MB |
-| Vettorizzata (`sma_grid_vectorized`) | 0,037 s | 2,8% | 81,4 MB |
+| Ciclo (`grid_search`) | 1,89 s | 7,3% | 0,8 MB |
+| Vettorizzata (`sma_grid_vectorized`) | 0,033 s | 2,1% | 82,2 MB |
 
-Circa 52× più veloce, al prezzo di più memoria (matrici coppie × barre): con griglie
+Circa 57× più veloce, al prezzo di più memoria (matrici coppie × barre): con griglie
 molto grandi sulla VM conviene dividerle a blocchi. Profilo con
 [flameox](https://github.com/morluto/flameox) e py-spy: il ciclo spende il tempo
 nell'overhead di pandas di ogni singolo backtest.
