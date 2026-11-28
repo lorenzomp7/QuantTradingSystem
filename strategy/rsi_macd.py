@@ -65,6 +65,7 @@ class RsiMacdParams:
     fee_bps: float = 5.0
     risk_free_rate: float = 0.0
     execution: str = "next_open"   # "next_open" (open della barra dopo il segnale) o "close"
+    slippage_bps: float = 0.0      # slippage sul prezzo d'esecuzione, a sfavore
 
     def __post_init__(self) -> None:
         for name in ("rsi_window", "macd_fast", "macd_slow", "macd_signal", "sto_k", "norm_window"):
@@ -86,6 +87,8 @@ class RsiMacdParams:
             raise ValueError("initial_capital deve essere > 0.")
         if self.fee_bps < 0:
             raise ValueError("fee_bps non può essere negativo.")
+        if self.slippage_bps < 0:
+            raise ValueError("slippage_bps non può essere negativo.")
         check_execution(self.execution)
 
 

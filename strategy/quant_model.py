@@ -61,6 +61,7 @@ class StrategyParams:
     fee_bps: float = 5.0            # costo per trade in basis point (5 bps = 0.05%)
     risk_free_rate: float = 0.0     # tasso risk-free annuo per lo Sharpe ratio
     execution: str = "next_open"    # "next_open" (open della barra dopo il segnale) o "close"
+    slippage_bps: float = 0.0       # slippage sul prezzo d'esecuzione, a sfavore (consigliato 5)
 
     def __post_init__(self) -> None:
         if self.short_window < 1 or self.long_window < 2:
@@ -71,6 +72,8 @@ class StrategyParams:
             raise ValueError("initial_capital deve essere > 0.")
         if self.fee_bps < 0:
             raise ValueError("fee_bps non può essere negativo.")
+        if self.slippage_bps < 0:
+            raise ValueError("slippage_bps non può essere negativo.")
         check_execution(self.execution)
 
 
@@ -185,7 +188,9 @@ class BaseStrategy(ABC):
         indice >= start). Le barre prima servono solo agli indicatori: equity,
         metriche, curva e Buy & Hold partono da t0, senza posizione; il primo
         ordine possibile si esegue sulla barra t0+1. Il Buy & Hold compra su
-        t0+1 con la stessa regola d'esecuzione e la stessa commissione, e non vende.
+        t0+1 con la stessa regola d'esecuzione, la stessa commissione e lo
+        stesso slippage, e non vende. `slippage_bps` sposta ogni prezzo
+        eseguito a sfavore: acquisti a R·(1 + s), vendite a R·(1 − s).
         """
         p = self.params
         execution = check_execution(getattr(p, "execution", "next_open"))
@@ -214,16 +219,17 @@ class BaseStrategy(ABC):
         close = sig["close"].iloc[t0:]
         open_ = sig["open"].iloc[t0:] if "open" in sig.columns else None
         held = held_all.iloc[t0:]
+        slippage = float(getattr(p, "slippage_bps", 0.0))
 
         # Rendimenti, cambi di posizione e prezzo eseguito: commissione sulla barra d'esecuzione.
-        strat_ret, turnover, price = position_returns(close, open_, held, p.fee_bps, execution)
+        strat_ret, turnover, price = position_returns(close, open_, held, p.fee_bps, execution, slippage)
         equity = p.initial_capital * (1 + strat_ret).cumprod()
         equity.name = "equity"
 
         # Buy & Hold sullo stesso periodo: compra sulla barra t0+1 come farebbe la strategia.
         bench_held = pd.Series(1.0, index=close.index)
         bench_held.iloc[0] = 0.0
-        bench_ret, _, _ = position_returns(close, open_, bench_held, p.fee_bps, execution)
+        bench_ret, _, _ = position_returns(close, open_, bench_held, p.fee_bps, execution, slippage)
         benchmark = p.initial_capital * (1 + bench_ret).cumprod()
         benchmark.name = "benchmark"
 

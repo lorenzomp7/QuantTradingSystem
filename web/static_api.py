@@ -55,6 +55,12 @@ def parse_params(params: dict) -> tuple[str, str, StrategyParams]:
         raise ValueError("fee_bps deve essere un numero") from exc
     if not 0 <= fee <= 500:
         raise ValueError("fee_bps deve essere tra 0 e 500")
+    try:
+        slippage = float(params.get("slippage_bps", 0.0))
+    except ValueError as exc:
+        raise ValueError("slippage_bps deve essere un numero") from exc
+    if not 0 <= slippage <= 500:
+        raise ValueError("slippage_bps deve essere tra 0 e 500")
     execution = str(params.get("execution", "next_open")).strip()
     if execution not in EXECUTIONS:
         raise ValueError(f"execution deve essere uno di {list(EXECUTIONS)}, ricevuto {execution!r}")
@@ -64,6 +70,7 @@ def parse_params(params: dict) -> tuple[str, str, StrategyParams]:
         initial_capital=INITIAL_CAPITAL,
         fee_bps=fee,
         execution=execution,
+        slippage_bps=slippage,
     )
     return symbol, period, strat
 

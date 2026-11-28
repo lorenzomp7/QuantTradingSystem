@@ -85,7 +85,7 @@ QuantTradingSystem/
 SMA_short > SMA_long  ->  signal = 1 (long)
 SMA_short <= SMA_long ->  signal = 0 (flat)
 h(t) = signal(t-1)                         # posizione detenuta: niente look-ahead
-P(t) = open(t)                             # prezzo d'esecuzione (execution = "next_open")
+P(t) = open(t) · (1 ± slippage_bps/10000)  # prezzo eseguito (execution = "next_open"): + acquisto, − vendita
 r(t) = (1 + h(t-1)·(P(t)/close(t-1) − 1)) · (1 + h(t)·(close(t)/P(t) − 1)) · (1 − c·|h(t) − h(t-1)|) − 1
        con c = fee_bps / 10000
 ```
@@ -97,6 +97,13 @@ d'esecuzione. I trade hanno la data della barra d'esecuzione e il suo open come 
 segnale che cambia sull'ultima barra non si esegue: compare in `pending_order`. Se l'open di
 una barra manca si usa il close precedente (`open_missing_bars` le conta); senza colonna
 `open` il backtest chiede `execution="close"`.
+
+`slippage_bps` (predefinito 0, consigliato 5; in `StrategyParams`, `/api/backtest` e sito senza
+server) sposta il prezzo eseguito a sfavore: si compra a open × (1 + s) e si vende a
+open × (1 − s), e i trade riportano quel prezzo. La tabella dei costi (`cost_sensitivity`) usa
+lo stesso meccanismo: lo slippage di ogni scenario si somma a quello di base sul prezzo, non
+alla commissione. Il `PaperBroker` del bot esegue ancora al prezzo esatto (punto 10 del Piano,
+parte broker, non fatta).
 
 Le prime barre, in cui gli indicatori non sono definiti (`warmup_bars`), non si valutano:
 equity, metriche (`start`, `bars`), curva e Buy & Hold partono dalla prima barra con indicatori

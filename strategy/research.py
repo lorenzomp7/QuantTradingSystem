@@ -4,7 +4,7 @@ strategy/research.py
 Studi per validare una strategia senza ingannarsi:
 
 * `cost_sensitivity`: rilancia lo stesso backtest con commissioni moltiplicate
-  e slippage aggiuntivo (tabella «costi × slippage» per la dashboard), con le
+  e slippage aggiuntivo sul prezzo d'esecuzione (tabella «costi × slippage» per la dashboard), con le
   coppie di scenari tra cui il rendimento cambia segno (punto 10 del Piano).
 * `walk_forward`: sceglie i parametri **solo** sul training, li congela e li
   prova fuori campione; un periodo finale (`holdout_bars`) resta fuori da ogni
@@ -43,10 +43,12 @@ def cost_sensitivity(
     """
     Stesso backtest con costi diversi.
 
-    Il costo per cambio di posizione diventa `fee_bps × moltiplicatore +
-    slippage_bps`: nel modello di QTS lo slippage è un costo avverso in punti
-    base sul turnover, come la commissione. Le posizioni non cambiano con i
-    costi, quindi il numero di trade resta lo stesso in tutti gli scenari.
+    Ogni scenario usa `fee_bps × moltiplicatore` come commissione e
+    `slippage_bps` della strategia + quello dello scenario come slippage sul
+    prezzo d'esecuzione (acquisti più cari, vendite più basse), non più sommato
+    alla commissione. `effective_cost_bps` è la loro somma, per cambio di
+    posizione. Le posizioni non cambiano con i costi, quindi il numero di trade
+    resta lo stesso in tutti gli scenari.
     """
     base = strategy.params
     rows = []
@@ -54,8 +56,10 @@ def cost_sensitivity(
         for mult in fee_multipliers:
             if mult < 0 or slip < 0:
                 raise ValueError("Moltiplicatori e slippage devono essere >= 0.")
-            cost = base.fee_bps * mult + slip
-            variant = type(strategy)(replace(base, fee_bps=cost))
+            fee = base.fee_bps * mult
+            slippage = float(getattr(base, "slippage_bps", 0.0)) + slip
+            cost = fee + slippage
+            variant = type(strategy)(replace(base, fee_bps=fee, slippage_bps=slippage))
             m = variant.backtest(data, bars_per_year=bars_per_year).metrics
             rows.append({
                 "name": f"fee×{mult:g} + {slip:g} bps",
@@ -92,6 +96,7 @@ class WindowResult:
     close: pd.Series
     asset_returns: pd.Series  # rendimento dell'asset per barra (0 alla prima)
     prices: pd.Series         # prezzo d'esecuzione per barra (conta dove la posizione cambia)
+    exit_slippage: float = 0.0  # slippage (frazione) sulla liquidazione di fine finestra
 
 
 def window_returns(strategy: BaseStrategy, data: pd.DataFrame, start: int, stop: int) -> WindowResult:
@@ -118,25 +123,27 @@ def window_returns(strategy: BaseStrategy, data: pd.DataFrame, start: int, stop:
     close = sig["close"].iloc[start:stop]
     open_ = sig["open"].iloc[start:stop] if "open" in sig.columns else None
     asset_ret = close.pct_change().fillna(0.0)
-    returns, turnover, prices = position_returns(close, open_, held, p.fee_bps, execution)
-    # Liquidazione a fine finestra: al close dell'ultima barra, con la sua commissione.
+    slippage = float(getattr(p, "slippage_bps", 0.0))
+    returns, turnover, prices = position_returns(close, open_, held, p.fee_bps, execution, slippage)
+    # Liquidazione a fine finestra: vendita al close dell'ultima barra, con commissione e slippage.
     last = abs(held.iloc[-1])
     turnover.iloc[-1] += last
-    returns.iloc[-1] = (1 + returns.iloc[-1]) * (1 - p.fee_bps / 10_000 * last) - 1
+    returns.iloc[-1] = (1 + returns.iloc[-1]) * (1 - slippage / 10_000 * last) * (1 - p.fee_bps / 10_000 * last) - 1
     return WindowResult(returns=returns, positions=held, turnover=turnover, close=close, asset_returns=asset_ret,
-                        prices=prices)
+                        prices=prices, exit_slippage=slippage / 10_000)
 
 
 def _window_trades(w: WindowResult) -> pd.DataFrame:
     """
     Trade della finestra: una riga per ogni cambio della posizione detenuta,
     sulla barra d'esecuzione e al prezzo eseguito P_t (l'open della barra con
-    `next_open`). La liquidazione di fine finestra avviene al close dell'ultima barra.
+    `next_open`). La liquidazione di fine finestra avviene al close dell'ultima
+    barra, meno lo slippage.
     """
     change = w.positions.diff().fillna(w.positions)
     rows = [(ts, "BUY" if c > 0 else "SELL", w.prices.loc[ts]) for ts, c in change[change != 0].items()]
     if w.positions.iloc[-1] > 0:
-        rows.append((w.close.index[-1], "SELL", w.close.iloc[-1]))
+        rows.append((w.close.index[-1], "SELL", w.close.iloc[-1] * (1 - w.exit_slippage)))
     idx = pd.DatetimeIndex([r[0] for r in rows], name=w.close.index.name)
     return pd.DataFrame({"side": [r[1] for r in rows], "price": [r[2] for r in rows]}, index=idx)
 

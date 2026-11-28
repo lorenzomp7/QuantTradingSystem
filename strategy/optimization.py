@@ -172,7 +172,7 @@ def sma_grid_vectorized(
     (coppie × barre). Stesse regole e stessa formula del backtest
     (`quant_model._returns_core`): posizione in t = segnale di t-1, eseguita
     all'open di t o al close di t-1 secondo `base_params.execution`, `fee_bps`
-    sulla barra d'esecuzione; i trade si contano sui cambi della posizione detenuta.
+    sulla barra d'esecuzione e `slippage_bps` sul prezzo eseguito; i trade si contano sui cambi della posizione detenuta.
 
     Come nel backtest ogni coppia è valutata dalla barra `long − 1` (fine del
     riscaldamento): senza un `start` comune ogni coppia ha quindi un periodo
@@ -215,7 +215,8 @@ def sma_grid_vectorized(
     close_np = close.to_numpy()
     open_np = data["open"].to_numpy(dtype=float) if "open" in data.columns else None
     ref, _ = _reference_price(close_np, open_np, execution)
-    ret, turnover, _ = _returns_core(close_np, ref, held, base_params.fee_bps / 10_000, 0.0)
+    ret, turnover, _ = _returns_core(close_np, ref, held, base_params.fee_bps / 10_000,
+                                     float(getattr(base_params, "slippage_bps", 0.0)) / 10_000)
     capital = float(base_params.initial_capital)
     equity = capital * np.cumprod(1 + ret, axis=1)         # piatta a `capital` prima di t0
 
