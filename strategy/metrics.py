@@ -27,6 +27,9 @@ import pandas as pd
 
 DEFAULT_BARS_PER_YEAR = 252
 
+# Sotto questo numero di round-trip le statistiche per trade dicono poco (`sample_warning`).
+MIN_TRADES_FOR_STATS = 30
+
 # Giorni di contrattazione per anno e minuti di seduta per giorno.
 #   crypto: 24/7          -> 365 giorni, 1440 minuti
 #   stocks: borsa USA     -> 252 giorni, 6,5 h = 390 minuti
@@ -265,6 +268,10 @@ def round_trip_stats(trades: pd.DataFrame, index: pd.Index | None = None, fee_bp
       di coda sono quelle con |perdita| >= 3·g; fragility = (perdita di coda
       massima / g) × (n° perdite di coda / n° trade). 0 senza perdite di coda,
       `None` senza trade vincenti (g non esiste).
+
+    `sample_warning` è vero con meno di `MIN_TRADES_FOR_STATS` (30) round-trip:
+    il campione è troppo piccolo per fidarsi di win rate ed expectancy
+    (vedi `trade_confidence` per l'intervallo).
     """
     table = round_trip_table(trades, index, fee_bps)
     closed = table[table["status"] == "closed"]
@@ -299,6 +306,7 @@ def round_trip_stats(trades: pd.DataFrame, index: pd.Index | None = None, fee_bp
 
     return {
         "round_trips": n,
+        "sample_warning": n < MIN_TRADES_FOR_STATS,
         "open_trades": int(len(table) - n),
         "win_rate_pct": round(len(wins) / n * 100, 2) if n else None,
         "avg_win_pct": round(avg_win * 100, 2) if wins else None,
@@ -315,4 +323,35 @@ def round_trip_stats(trades: pd.DataFrame, index: pd.Index | None = None, fee_bp
         "worst_trade_pct": round(min(pnl) * 100, 2) if n else None,
         "fragility_ratio": round(fragility, 4) if fragility is not None else None,
         "avg_holding_bars": round(sum(holding) / len(holding), 1) if holding else None,
+    }
+
+
+def trade_confidence(pnl, resamples: int = 2000, seed: int = 12345) -> dict:
+    """
+    Intervallo bootstrap al 95% di expectancy e win rate, dai PnL netti per trade.
+
+    `pnl` sono i rendimenti netti dei round-trip chiusi, in punti percentuali
+    (colonna `net_pct` di `round_trip_table`). Si ricampionano i trade con
+    reinserimento `resamples` volte e si prendono i percentili 2,5 e 97,5
+    della media (l'expectancy è la media dei PnL per trade) e della quota di
+    trade vincenti. Con meno di due trade gli intervalli sono `None`.
+
+    Il generatore è `np.random.RandomState`: la sua sequenza è fissata tra le
+    versioni di numpy, quindi con lo stesso seme server e browser (Pyodide)
+    danno lo stesso intervallo.
+    """
+    if resamples < 1:
+        raise ValueError("resamples deve essere almeno 1.")
+    values = np.asarray(list(pnl), dtype=float)
+    values = values[~np.isnan(values)]
+    n = len(values)
+    if n < 2:
+        return {"expectancy_ci95_pct": None, "win_rate_ci95_pct": None}
+    rng = np.random.RandomState(seed)
+    sample = values[rng.randint(0, n, size=(resamples, n))]
+    expectancy = np.percentile(sample.mean(axis=1), [2.5, 97.5])
+    win_rate = np.percentile((sample > 0).mean(axis=1) * 100, [2.5, 97.5])
+    return {
+        "expectancy_ci95_pct": [round(float(expectancy[0]), 4), round(float(expectancy[1]), 4)],
+        "win_rate_ci95_pct": [round(float(win_rate[0]), 2), round(float(win_rate[1]), 2)],
     }

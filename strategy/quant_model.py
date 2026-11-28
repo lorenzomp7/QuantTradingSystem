@@ -34,7 +34,13 @@ from dataclasses import asdict, dataclass, field
 import numpy as np
 import pandas as pd
 
-from strategy.metrics import DEFAULT_BARS_PER_YEAR, effective_bars_per_year, round_trip_stats, round_trip_table
+from strategy.metrics import (
+    DEFAULT_BARS_PER_YEAR,
+    effective_bars_per_year,
+    round_trip_stats,
+    round_trip_table,
+    trade_confidence,
+)
 
 # Valore storico, lasciato per compatibilità: le metriche ora usano il numero
 # di barre l'anno del mercato e dell'intervallo (vedi strategy/metrics.py).
@@ -102,6 +108,10 @@ class BacktestResult:
         `trades` elenca le singole esecuzioni (BUY e SELL); `round_trips` i
         trade completi con rendimento netto, PnL, commissioni, MAE/MFE e
         `status` ("closed" o "open" per quello ancora aperto a fine periodo).
+
+        Alle metriche si aggiungono qui (non in `backtest`, per non pagare il
+        bootstrap a ogni backtest di una griglia) gli intervalli al 95% di
+        expectancy e win rate: `expectancy_ci95_pct` e `win_rate_ci95_pct`.
         """
         eq = self.equity_curve if tail is None else self.equity_curve.tail(tail)
         benchmark = self.benchmark_curve
@@ -109,8 +119,12 @@ class BacktestResult:
             close = self.signals["close"].loc[self.equity_curve.index]
             benchmark = self.metrics["initial_capital"] * close / close.iloc[0]
         in_market = self.signals["in_market"]
+        closed = (
+            self.round_trips.loc[self.round_trips["status"] == "closed", "net_pct"].tolist()
+            if self.round_trips is not None else []
+        )
         return {
-            "metrics": self.metrics,
+            "metrics": {**self.metrics, **trade_confidence(closed)},
             "equity_curve": [
                 {
                     "date": d.strftime("%Y-%m-%d"),

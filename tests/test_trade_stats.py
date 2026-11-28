@@ -252,3 +252,69 @@ def test_backtest_metrics_include_trade_quality():
     assert m["worst_trade_pct"] == pytest.approx(closed.min(), abs=0.006)
     assert m["expectancy_pct"] == pytest.approx(closed.mean(), abs=1e-3)
     assert m["accuracy_frequency_pct"] == m["win_rate_pct"]
+
+
+# ---------------------------------------------------------------- Punto 35
+def test_sample_warning_threshold():
+    rng = np.random.default_rng(0)
+    for n, expected in [(0, True), (10, True), (29, True), (30, False), (40, False)]:
+        s = round_trip_stats(_pct_trades(list(rng.normal(0.5, 3, n).round(2))))
+        assert s["round_trips"] == n and s["sample_warning"] is expected, n
+
+
+def test_bootstrap_is_deterministic_and_contains_point():
+    from strategy.metrics import trade_confidence
+
+    rng = np.random.default_rng(1)
+    pnl = list(rng.normal(0.4, 2.5, 40))
+    a, b = trade_confidence(pnl), trade_confidence(pnl)
+    assert a == b                                              # seme fisso: stesso intervallo
+    assert set(a) == {"expectancy_ci95_pct", "win_rate_ci95_pct"}
+    lo, hi = a["expectancy_ci95_pct"]
+    point = float(np.mean(pnl))                               # expectancy = media dei PnL per trade
+    assert lo < point < hi
+    wlo, whi = a["win_rate_ci95_pct"]
+    assert 0 <= wlo < float(np.mean(np.array(pnl) > 0)) * 100 < whi <= 100
+    # Un altro seme dà un intervallo diverso ma vicino; più ricampionamenti non cambiano l'ordine di grandezza.
+    other = trade_confidence(pnl, seed=1)
+    assert other != a and other["expectancy_ci95_pct"][0] == pytest.approx(lo, abs=0.3)
+    assert trade_confidence(pnl, resamples=500)["expectancy_ci95_pct"][1] == pytest.approx(hi, abs=0.3)
+    # Con meno di due trade non c'è nulla da ricampionare.
+    for few in ([], [1.5]):
+        assert trade_confidence(few) == {"expectancy_ci95_pct": None, "win_rate_ci95_pct": None}
+    # Valori vuoti (trade aperto senza prezzo) ignorati.
+    assert trade_confidence(pnl + [float("nan")]) == a
+    with pytest.raises(ValueError):
+        trade_confidence(pnl, resamples=0)
+
+
+def test_confidence_is_computed_in_to_dict_only():
+    data = generate_mock_ohlcv("CONF", period="5y")
+    res = MovingAverageCrossover(StrategyParams(short_window=5, long_window=20, fee_bps=5)).backtest(data)
+    assert "expectancy_ci95_pct" not in res.metrics and "win_rate_ci95_pct" not in res.metrics
+    assert res.metrics["sample_warning"] is (res.metrics["round_trips"] < 30)
+    out = res.to_dict()["metrics"]
+    assert "expectancy_ci95_pct" not in res.metrics            # to_dict non modifica il risultato
+    lo, hi = out["expectancy_ci95_pct"]
+    assert lo <= out["expectancy_pct"] <= hi
+    wlo, whi = out["win_rate_ci95_pct"]
+    assert wlo <= out["win_rate_pct"] <= whi
+    assert res.to_dict()["metrics"] == out
+
+
+def test_static_and_api_confidence_equal():
+    import main
+
+    q = {"symbol": "SPY", "short_window": "5", "long_window": "20", "period": "5y", "fee_bps": "10"}
+    with TestClient(main.app) as client:
+        api = client.get("/api/backtest", params=q).json()["metrics"]
+    mine = static_api.backtest(q, None)["metrics"]
+    assert api["round_trips"] >= 2
+    assert mine["expectancy_ci95_pct"] == api["expectancy_ci95_pct"] and len(api["expectancy_ci95_pct"]) == 2
+    assert mine["win_rate_ci95_pct"] == api["win_rate_ci95_pct"]
+    assert mine["sample_warning"] == api["sample_warning"]
+    assert mine == api
+    # Troppo pochi trade: nessun intervallo, avviso acceso.
+    few = static_api.backtest({"symbol": "SPY", "short_window": "100", "long_window": "400", "period": "2y"}, None)
+    assert few["metrics"]["round_trips"] < 2 and few["metrics"]["expectancy_ci95_pct"] is None
+    assert few["metrics"]["sample_warning"] is True

@@ -130,6 +130,10 @@ guadagno medio − quota di persi × |perdita media|; `accuracy_magnitude_pct` =
 massima / guadagno mediano dei vincenti) × (perdite di coda / trade), dove una perdita è di coda
 se vale almeno 3 guadagni mediani (0 se non ce ne sono). Esempio: +2, +4, +6, −1, −15% →
 expectancy −0,8%, accuracy 42,86% e 60%, fragility 0,75.
+Con meno di 30 round-trip `sample_warning` è vero: il campione è troppo piccolo per fidarsi di
+win rate ed expectancy. La risposta dell'API (e del sito senza server) aggiunge
+`expectancy_ci95_pct` e `win_rate_ci95_pct`: intervalli bootstrap al 95% (2000 ricampionamenti
+dei PnL netti per trade, seme fisso 12345, `None` con meno di due trade).
 Altre metriche: `exposure_pct` (quota di barre in posizione), `calmar_ratio` (CAGR / |max
 drawdown|), `max_drawdown_duration_bars` (barre consecutive sotto il massimo precedente) e il
 Sortino con la downside deviation standard, `√(media(min(eccesso, 0)²))` su tutte le barre
