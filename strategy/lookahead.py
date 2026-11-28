@@ -21,11 +21,23 @@ da zero per l'interfaccia di QTS (`BaseStrategy.generate_signals`):
 * `assert_no_lookahead`: come `check_lookahead`, ma solleva `AssertionError`
   con un messaggio leggibile. È la forma da usare nei test.
 
-Limiti: `check_lookahead` è un campionamento, non una dimostrazione; una
-colonna 0/1 come `signal` può coincidere per caso, per questo si controllano
-anche tutte le colonne aggiunte dalla strategia. Il controllo riguarda
-`generate_signals`; il ritardo di una barra del backtest (`signal.shift(1)`)
-resta coperto dai test di `tests/test_quant_model.py`.
+La strategia riceve sempre una copia dei dati: se li modifica sul posto non
+tocca quelli di chi chiama e non può lasciare, da una chiamata all'altra,
+colonne già calcolate con il futuro. Si confrontano tutte le colonne che la
+strategia restituisce, comprese quelle d'ingresso (una `close` o un `volume`
+riscritti con dati futuri sono look-ahead come un indicatore).
+
+Limiti:
+* `check_lookahead` è un campionamento, non una dimostrazione (con
+  `samples=len(data)` controlla tutte le barre utili); una colonna 0/1 come
+  `signal` può coincidere per caso, per questo si controllano tutte le colonne.
+* Le barre prima di `min_bars − 1` non sono verificabili se la strategia
+  rifiuta le serie corte: lì il valore troncato non si può calcolare.
+* Lo stato interno della strategia non è sotto controllo: una strategia che
+  conserva risultati tra una chiamata e l'altra (cache, attributi aggiornati
+  da `generate_signals`) può dare valori coerenti pur avendo visto il futuro.
+* Il controllo riguarda `generate_signals`; il ritardo di una barra del backtest
+  (`signal.shift(1)`) resta coperto dai test di `tests/test_quant_model.py`.
 
 Solo pandas e NumPy: nessun import di rete, funziona anche in Pyodide (pandas 3).
 """
@@ -43,11 +55,50 @@ _REQUIRED = ("signal", "position")
 DEFAULT_LENGTHS = (150, 250, 400)
 
 
+class _Missing:
+    """Segnaposto di «colonna assente»: distinto da `None`, che è un valore lecito."""
+
+    def __repr__(self) -> str:
+        return "<colonna mancante>"
+
+
+_MISSING = _Missing()
+
+
 # ================================================================ Supporto
-def _columns_to_check(data: pd.DataFrame, full: pd.DataFrame, columns) -> list:
-    """`signal`, `position` e ogni colonna aggiunta dalla strategia, oppure quelle chieste."""
+def _name(strategy) -> str:
+    return str(getattr(strategy, "name", type(strategy).__name__))
+
+
+def _run(strategy, frame: pd.DataFrame, what: str) -> pd.DataFrame:
+    """
+    `generate_signals` su una COPIA di `frame`. `ValueError` (dati insufficienti)
+    passa com'è; ogni altro errore diventa un `RuntimeError` che dice dove (`what`).
+    """
+    try:
+        out = strategy.generate_signals(frame.copy())
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(
+            f"generate_signals della strategia {_name(strategy)!r} è fallita su {what}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    if len(out) != len(frame):
+        raise ValueError(
+            f"generate_signals deve restituire una riga per ogni barra: {len(out)} righe "
+            f"per {len(frame)} barre ({what})."
+        )
+    return out
+
+
+def _columns_to_check(full: pd.DataFrame, columns) -> list:
+    """
+    Le colonne chieste (anche una sola, come stringa), oppure `signal`, `position`
+    e tutte le altre colonne restituite dalla strategia, comprese quelle d'ingresso.
+    """
     if columns is not None:
-        cols = list(columns)
+        cols = [columns] if isinstance(columns, str) else list(columns)
         missing = [c for c in cols if c not in full.columns]
         if missing:
             raise ValueError(f"Colonne non prodotte dalla strategia: {missing}.")
@@ -55,12 +106,11 @@ def _columns_to_check(data: pd.DataFrame, full: pd.DataFrame, columns) -> list:
     missing = [c for c in _REQUIRED if c not in full.columns]
     if missing:
         raise ValueError(f"generate_signals deve produrre le colonne {missing}.")
-    added = [c for c in full.columns if c not in data.columns and c not in _REQUIRED]
-    return [*_REQUIRED, *added]
+    return [*_REQUIRED, *(c for c in full.columns if c not in _REQUIRED)]
 
 
 def _scalar(value):
-    """Valore Python semplice (non uno scalare NumPy), per elenchi leggibili e JSON."""
+    """Scalare NumPy -> valore Python semplice, più leggibile negli elenchi e nei messaggi."""
     return value.item() if isinstance(value, np.generic) else value
 
 
@@ -69,7 +119,10 @@ def _is_number(value) -> bool:
 
 
 def _same(a, b, rtol: float, atol: float) -> bool:
-    """Uguaglianza con tolleranza; NaN = NaN, un NaN contro un numero è una differenza."""
+    """
+    Uguaglianza con tolleranza. NaN = NaN (e `None` = NaN); un NaN contro un
+    numero è una differenza; gli infiniti sono uguali solo a se stessi.
+    """
     a_na, b_na = bool(pd.isna(a)), bool(pd.isna(b))
     if a_na or b_na:
         return a_na and b_na
@@ -77,16 +130,33 @@ def _same(a, b, rtol: float, atol: float) -> bool:
         a, b = float(a), float(b)
         if a == b:                      # comprende gli infiniti dello stesso segno
             return True
+        if not (np.isfinite(a) and np.isfinite(b)):
+            return False                # infinito contro finito o contro l'infinito opposto
         return bool(abs(a - b) <= atol + rtol * abs(b))
-    return bool(a == b)
+    try:
+        return bool(a == b)
+    except (TypeError, ValueError):     # oggetti non confrontabili
+        return a is b
 
 
 def _accepts(strategy, data: pd.DataFrame, n: int) -> bool:
     try:
-        strategy.generate_signals(data.iloc[:n])
+        _run(strategy, data.iloc[:n], f"le prime {n} barre")
     except ValueError:
         return False
     return True
+
+
+def _min_bars(strategy, data: pd.DataFrame) -> int:
+    """Come `min_bars`, sapendo già che la strategia accetta la serie intera."""
+    lo, hi = 1, len(data)               # hi è sempre accettato
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if _accepts(strategy, data, mid):
+            hi = mid
+        else:
+            lo = mid + 1
+    return hi
 
 
 def min_bars(strategy, data: pd.DataFrame) -> int:
@@ -97,17 +167,9 @@ def min_bars(strategy, data: pd.DataFrame) -> int:
     Ricerca binaria: presuppone che, se n barre bastano, bastino anche n + 1.
     Solleva `ValueError` se la strategia rifiuta anche la serie intera.
     """
-    n = len(data)
-    if n == 0 or not _accepts(strategy, data, n):
+    if len(data) == 0 or not _accepts(strategy, data, len(data)):
         raise ValueError("La strategia non accetta la serie intera: impossibile cercare il look-ahead.")
-    lo, hi = 1, n                       # hi è sempre accettato
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if _accepts(strategy, data, mid):
-            hi = mid
-        else:
-            lo = mid + 1
-    return hi
+    return _min_bars(strategy, data)
 
 
 # ============================================================== Look-ahead
@@ -125,9 +187,12 @@ def check_lookahead(
 
     Per `samples` istanti t (scelti con `seed`, quindi sempre gli stessi a parità
     di argomenti) confronta `generate_signals(data[:t+1]).iloc[-1]` con
-    `generate_signals(data).iloc[t]` su `signal`, `position` e ogni colonna
-    aggiunta dalla strategia (oppure solo su `columns`). NaN conta uguale a NaN;
-    i numeri sono uguali se |troncato − completo| <= atol + rtol · |completo|.
+    `generate_signals(data).iloc[t]` su `signal`, `position` e ogni altra
+    colonna restituita, comprese quelle d'ingresso (oppure solo su `columns`,
+    una lista o un nome). NaN conta uguale a NaN; i numeri sono uguali se
+    |troncato − completo| <= atol + rtol · |completo|; un infinito è uguale solo
+    a un infinito dello stesso segno. La strategia lavora sempre su copie:
+    `data` non viene modificato.
 
     I t vanno dalla prima barra per cui la strategia non solleva `ValueError`
     (compresa sempre nel campione, perché è il bordo del riscaldamento) alla
@@ -138,17 +203,20 @@ def check_lookahead(
         t         -> posizione della barra (0 = prima barra)
         date      -> etichetta dell'indice in quella posizione
         column    -> colonna diversa
-        truncated -> valore calcolato senza le barre successive
+        truncated -> valore calcolato senza le barre successive (`<colonna
+                     mancante>` se con meno barre la colonna non esiste)
         full      -> valore calcolato con l'intera serie
+
+    Un errore della strategia diverso da `ValueError` diventa un `RuntimeError`
+    che indica la barra t su cui è avvenuto.
     """
     if samples < 1:
         raise ValueError("samples deve essere almeno 1.")
-    full = strategy.generate_signals(data)
-    if len(full) != len(data):
-        raise ValueError("generate_signals deve restituire una riga per ogni barra di data.")
-    cols = _columns_to_check(data, full, columns)
+    data = data.copy()                              # d'ora in poi nessuno tocca i dati di chi chiama
+    full = _run(strategy, data, "la serie intera")
+    cols = _columns_to_check(full, columns)
 
-    first = min_bars(strategy, data) - 1            # primo t calcolabile
+    first = _min_bars(strategy, data) - 1           # primo t calcolabile
     last = len(data) - 2                            # penultima barra
     if last < first:
         raise ValueError(
@@ -163,14 +231,18 @@ def check_lookahead(
 
     found: list[dict] = []
     for t in sorted(chosen):
-        part = strategy.generate_signals(data.iloc[: t + 1])
-        if len(part) != t + 1:
-            raise ValueError("generate_signals deve restituire una riga per ogni barra di data.")
+        what = f"data[:t+1] con t={t} ({data.index[t]})"
+        try:
+            part = _run(strategy, data.iloc[: t + 1], what)
+        except ValueError as exc:
+            raise ValueError(
+                f"La strategia {_name(strategy)!r} rifiuta {what} pur accettando serie più corte: {exc}"
+            ) from exc
         for col in cols:
             # Una colonna che sparisce con meno dati dipende anch'essa dal futuro.
-            truncated = part[col].iloc[-1] if col in part.columns else None
+            truncated = part[col].iloc[-1] if col in part.columns else _MISSING
             complete = full[col].iloc[t]
-            if truncated is None or not _same(truncated, complete, rtol, atol):
+            if truncated is _MISSING or not _same(truncated, complete, rtol, atol):
                 found.append({
                     "t": int(t),
                     "date": full.index[t],
@@ -189,7 +261,7 @@ def assert_no_lookahead(strategy, data: pd.DataFrame, **kw) -> None:
     found = check_lookahead(strategy, data, **kw)
     if not found:
         return
-    name = getattr(strategy, "name", type(strategy).__name__)
+    name = _name(strategy)
     by_column: dict = {}
     for row in found:
         by_column[row["column"]] = by_column.get(row["column"], 0) + 1
@@ -225,7 +297,7 @@ def check_recursive(
 
     Per ogni L in `lengths` calcola `generate_signals(data[-L:])` e ne confronta
     le ultime `tail` barre con quelle della serie intera, sulle stesse colonne
-    di `check_lookahead`. Le lunghezze non minori di `len(data)` si saltano
+    di `check_lookahead` e sempre su copie dei dati. Le lunghezze non minori di `len(data)` si saltano
     (sarebbero la serie intera); se non ne resta nessuna, o se una è più corta
     di `tail`, solleva `ValueError`, come fa la strategia se L non le basta.
 
@@ -234,11 +306,12 @@ def check_recursive(
         length       -> L, barre dello storico corto
         column       -> colonna diversa
         n_diff       -> barre della coda che differiscono (su `tail`)
-        max_abs_diff -> massima differenza assoluta (inf se un lato è NaN,
-                        NaN per colonne non numeriche)
+        max_abs_diff -> massima differenza assoluta (inf se un lato è NaN o
+                        infinito, o se la colonna manca; NaN per colonne non numeriche)
         max_rel_diff -> massimo di |corto − completo| / |completo|
         date         -> barra della differenza assoluta più grande
-        short, full  -> i due valori in quella barra
+        short, full  -> i due valori in quella barra (`short` è `<colonna
+                        mancante>` se con lo storico corto la colonna non esiste)
 
     Non è look-ahead: è il segno di indicatori ricorsivi (EMA, RSI di Wilder) o
     di un segnale a stato. Serve a sapere quante barre di storico dare al bot.
@@ -254,19 +327,20 @@ def check_recursive(
     if usable[0] < tail:
         raise ValueError(f"Lunghezza {usable[0]} minore di tail ({tail}).")
 
-    full = strategy.generate_signals(data)
-    cols = _columns_to_check(data, full, columns)
+    data = data.copy()
+    full = _run(strategy, data, "la serie intera")
+    cols = _columns_to_check(full, columns)
     ref = full.iloc[-tail:]
 
     found: list[dict] = []
     for length in usable:
-        short = strategy.generate_signals(data.iloc[-length:]).iloc[-tail:]
+        short = _run(strategy, data.iloc[-length:], f"le ultime {length} barre").iloc[-tail:]
         for col in cols:
             if col not in short.columns:
                 found.append({
                     "length": length, "column": col, "n_diff": tail,
                     "max_abs_diff": float("inf"), "max_rel_diff": float("inf"),
-                    "date": ref.index[-1], "short": None, "full": _scalar(ref[col].iloc[-1]),
+                    "date": ref.index[0], "short": _MISSING, "full": _scalar(ref[col].iloc[0]),
                 })
                 continue
             a, b = short[col], ref[col]
@@ -279,7 +353,8 @@ def check_recursive(
                 with np.errstate(divide="ignore", invalid="ignore"):
                     abs_diff = np.abs(x - y)
                     rel_diff = abs_diff / np.abs(y)
-                # NaN da un lato solo: differenza non misurabile, la peggiore.
+                # NaN da un lato solo, o infiniti diversi (inf − inf = NaN): differenza
+                # non misurabile, la peggiore. Dove i valori sono uguali si azzera sotto.
                 abs_diff = np.where(np.isnan(abs_diff), np.inf, abs_diff)
                 rel_diff = np.where(np.isnan(rel_diff), np.inf, rel_diff)
                 abs_diff = np.where(diff_mask, abs_diff, 0.0)
