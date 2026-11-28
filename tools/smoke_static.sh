@@ -10,7 +10,9 @@
 # stato e log arrivino dai file, i pulsanti di controllo siano sostituiti dal rimando a
 # GitHub Actions, il backtest calcolato nel browser dia gli stessi numeri del Python
 # locale, il grafico e la tabella dei costi compaiano, un parametro sbagliato mostri
-# l'errore e la pagina non abbia errori. Salva gli screenshot. Esce con 1 al primo
+# l'errore e la pagina non abbia errori. Poi (punto 53 del Piano): state/logs.json che non
+# arriva lascia in errore solo i Log e «Riprova» li ricarica; uno stato scritto 3 ore fa
+# dà «aggiornato 3 ore fa» e il badge IN RITARDO. Salva gli screenshot. Esce con 1 al primo
 # controllo fallito.
 #
 # PYODIDE_DIR: cartella estratta da pyodide-<versione>.tar.bz2 (release GitHub di Pyodide),
@@ -160,17 +162,67 @@ print(len([m for m in msgs if m.get("type") == "error"]))')"
   ok "[$W×$H] pagina senza errori, screenshot in $OUT_DIR/static-${W}x${H}.png"
 done
 
+look() {
+  js '(() => { const state = (id) => document.getElementById(id).closest("section").dataset.state;
+    const n = document.getElementById("logs-note"), b = n.querySelector("button");
+    const t = document.querySelector("#status time.ago[data-prefix^=aggiornato]");
+    const banner = document.getElementById("stale-banner");
+    return { badge: document.getElementById("badge").textContent,
+             state: { status: state("status"), account: state("account"), logs: state("logs") },
+             note: n.hidden ? "" : n.textContent, alert: !!n.querySelector("[role=alert]"),
+             button: b ? b.tagName + ":" + b.type + ":" + b.textContent : "",
+             written: t ? t.textContent : "", title: t ? t.title : "",
+             stale: banner.hidden ? "" : banner.textContent }; })()'
+}
+expect() { python3 -c 'import json,sys; u=json.loads(sys.argv[1]); exec(sys.argv[2])' "$2" "$3" || fail "$1: $2"; }
+
+# state/logs.json non arriva (richiesta interrotta dal browser): solo i Log vanno in errore.
+ab network route "**/state/logs.json*" --abort >/dev/null
+js 'refresh().then(() => true)' >/dev/null
+got="$(look)"
+ab network unroute >/dev/null
+expect "log non scaricabili" "$got" '
+assert u["state"] == {"status": "ok", "account": "ok", "logs": "error"}, u["state"]
+assert u["alert"] and "non raggiungibili" in u["note"] and u["button"] == "BUTTON:button:Riprova", u
+assert u["badge"] == "ATTIVO", u["badge"]
+'
+ok "log non scaricabili: solo la sezione Log in errore con «Riprova», stato e account aggiornati"
+ab click '#logs-note button' >/dev/null
+ab wait --fn 'document.getElementById("logs").closest("section").dataset.state === "ok"' >/dev/null \
+  || fail "«Riprova» non ha ricaricato i log: $(look)"
+expect "dopo «Riprova»" "$(look)" 'assert u["note"] == "", u'
+ok "«Riprova» ricarica i log e l'avviso sparisce"
+
 # Stato vecchio (esecuzioni pianificate saltate o sospese): il badge non deve dire ATTIVO.
-python3 - "$SITE/state/status.json" <<'EOF'
+age_status() {  # age_status <minuti>: riscrive written_at nel file servito
+  python3 - "$SITE/state/status.json" "$1" <<'EOF'
 import json, sys
 from datetime import datetime, timedelta, timezone
 p = sys.argv[1]; s = json.load(open(p))
-s["written_at"] = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
+s["written_at"] = (datetime.now(timezone.utc) - timedelta(minutes=int(sys.argv[2]))).isoformat()
 json.dump(s, open(p, "w"))
 EOF
-js 'refresh().then(() => document.getElementById("badge").textContent)' >"$OUT_DIR/badge.txt"
-grep -q "IN RITARDO" "$OUT_DIR/badge.txt" || fail "stato di 5 ore fa: badge $(cat "$OUT_DIR/badge.txt"), atteso IN RITARDO"
-ok "stato vecchio di 5 ore: badge IN RITARDO"
+}
+age_status 170   # 2 ore e 50 minuti: i ritardi normali del cron di GitHub non sono un allarme
+js 'refresh().then(() => true)' >/dev/null
+expect "stato di 2 ore e 50 minuti fa" "$(look)" '
+assert u["badge"] == "ATTIVO" and u["state"]["status"] == "ok" and not u["stale"], u
+assert u["written"] == "aggiornato 2 ore fa", u["written"]
+'
+ok "stato di 2 ore e 50 minuti fa: ancora ATTIVO, «aggiornato 2 ore fa»"
+age_status 185   # 3 ore (e 5 minuti)
+js 'refresh().then(() => true)' >/dev/null
+got="$(look)"
+expect "stato di 3 ore fa" "$got" '
+import re
+assert u["badge"] == "IN RITARDO" and u["state"]["status"] == "stale", u
+assert u["written"] == "aggiornato 3 ore fa", u["written"]
+assert re.search(r"\b20\d\d\b", u["title"]) and re.search(r"\d{1,2}:\d{2}", u["title"]), "data completa nel tooltip: %r" % u["title"]
+assert "3 ore" in u["stale"], u["stale"]
+assert u["state"]["account"] == "ok" and u["state"]["logs"] == "ok", u["state"]
+'
+ok "stato di 3 ore fa: «aggiornato 3 ore fa» (tooltip: $(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["title"])' "$got")), badge IN RITARDO"
+ab screenshot "$OUT_DIR/static-in-ritardo.png" >/dev/null
 
 # Parametri sbagliati: l'errore di validazione arriva dal Python nel browser, come il 422 dell'API.
 ab fill '#bt-short' '60' >/dev/null

@@ -10,6 +10,9 @@
 # Per due finestre (1280×800 e 390×844): apre la dashboard, aspetta il backtest,
 # controlla che il grafico abbia dati e che la pagina non abbia errori, poi prova
 # Avvia/Ferma senza chiave (deve dare 401) e con la chiave. Salva gli screenshot.
+# In mezzo prova le sezioni indipendenti (punto 53 del Piano): /api/logs che risponde 500
+# (solo i Log in errore, «Riprova» li ricarica), browser offline (avviso in alto, comando
+# non inviato, ricarica al ritorno della rete) e bot in ritardo (badge IN RITARDO).
 # Esce con 0 se tutto passa, con 1 al primo controllo fallito.
 #
 # Richiede agent-browser (npm i -g agent-browser && agent-browser install --with-deps).
@@ -191,6 +194,117 @@ print(len(bad))')"
   ab screenshot "$OUT_DIR/dashboard-${W}x${H}.png" >/dev/null
   ok "[$W×$H] pagina senza errori, screenshot in $OUT_DIR/dashboard-${W}x${H}.png"
 done
+
+# ------------------------------------- Sezioni indipendenti, offline, ritardo
+# Guasti finti dentro la pagina: il server non si può rompere a comando, e così la prova
+# vale anche per una dashboard già online. window.__fault sceglie il guasto:
+#   "logs500"            /api/logs risponde 500
+#   { late, loop }       /api/status vero, ma con il bot acceso, ultimo ciclo `late` secondi fa
+#                        e intervallo del ciclo di `loop` secondi
+js "$(cat <<'EOF'
+(() => {
+  window.__realFetch = window.fetch;
+  window.fetch = async (u, o) => {
+    const url = String(u), f = window.__fault;
+    const json = (body, status) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+    if (f === "logs500" && url.includes("/api/logs")) return json({ detail: "guasto di prova" }, 500);
+    const r = await window.__realFetch(u, o);
+    if (f && f.late && url.includes("/api/status")) {
+      const t = new Date(Date.now() - f.late * 1000).toISOString();
+      return json({ ...(await r.json()), running: true, started_at: t, last_run_at: t, loop_interval_seconds: f.loop }, 200);
+    }
+    return r;
+  };
+  window.__look = () => {
+    const state = (id) => document.getElementById(id).closest("section").dataset.state;
+    const note = (id) => { const n = document.getElementById(id + "-note"); const b = n.querySelector("button"); const t = n.querySelector("time.ago");
+      return { hidden: n.hidden, text: n.textContent, alert: !!n.querySelector("[role=alert]"),
+               button: b ? b.tagName + ":" + b.type + ":" + b.textContent : "", ago: t ? t.textContent : "", title: t ? t.title : "" }; };
+    const banner = (id) => { const b = document.getElementById(id); return b.hidden ? "" : b.textContent; };
+    return { badge: document.getElementById("badge").textContent, online: navigator.onLine,
+             state: { status: state("status"), account: state("account"), logs: state("logs") },
+             note: { status: note("status"), account: note("account"), logs: note("logs") },
+             at: { status: sections.status.at, account: sections.account.at, logs: sections.logs.at },
+             offline: banner("offline-banner"), stale: banner("stale-banner"),
+             logs: document.getElementById("logs").textContent.length };
+  };
+  return true;
+})()
+EOF
+)" >/dev/null
+expect() {  # expect <cosa> <JSON di __look()> <asserzioni Python su `u`>
+  python3 -c 'import json,sys; u=json.loads(sys.argv[1]); exec(sys.argv[2])' "$2" "$3" || fail "$1: $2"
+}
+all_ok='["status","account","logs"].every(id => document.getElementById(id).closest("section").dataset.state === "ok")'
+
+# 1) /api/logs risponde 500: solo i Log in errore, stato e account aggiornati.
+before="$(js '__look()')"
+look="$(js '(async () => { window.__fault = "logs500"; await new Promise(r => setTimeout(r, 20)); await refresh(); return __look(); })()')"
+expect "/api/logs in errore 500" "$look" '
+assert u["state"] == {"status": "ok", "account": "ok", "logs": "error"}, u["state"]
+n = u["note"]["logs"]
+assert not n["hidden"] and n["alert"] and "errore 500" in n["text"] and "Log" in n["text"], n
+assert n["button"] == "BUTTON:button:Riprova", n["button"]
+assert n["ago"].startswith("Dati mostrati: aggiornati ") and n["title"], n
+assert u["note"]["status"]["hidden"] and u["note"]["account"]["hidden"], u["note"]
+'
+python3 - "$before" "$look" <<'EOF' || fail "con /api/logs in errore stato e account dovevano aggiornarsi lo stesso: $look"
+import json, sys
+b, u = json.loads(sys.argv[1]), json.loads(sys.argv[2])
+assert u["at"]["status"] > b["at"]["status"] and u["at"]["account"] > b["at"]["account"], (b["at"], u["at"])
+assert u["at"]["logs"] == b["at"]["logs"] and u["logs"] == b["logs"], "i log caricati prima devono restare visibili"
+EOF
+ok "/api/logs 500: solo la sezione Log in errore con «Riprova», stato e account aggiornati"
+# Guasto finito e clic su «Riprova» nello stesso passo, prima che arrivi l'aggiornamento periodico.
+js 'window.__fault = null; document.querySelector("#logs-note button").click(); true' >/dev/null
+ab wait --fn "$all_ok" >/dev/null || fail "«Riprova» non ha ricaricato i log: $(js '__look()')"
+look="$(js '__look()')"
+expect "dopo «Riprova»" "$look" 'assert u["note"]["logs"]["hidden"] and u["at"]["logs"], u'
+ok "«Riprova» ricarica i log e l'avviso sparisce"
+
+# 2) Offline: avviso in alto, Avvia dice che il comando non è partito, poi tutto torna da solo.
+ab fill '#apikey' '' >/dev/null     # se l'emulazione non funzionasse, Avvia darebbe solo un 401
+ab set offline on >/dev/null
+ab wait --fn '!document.getElementById("offline-banner").hidden' >/dev/null \
+  || { ab set offline off >/dev/null; fail "offline: l'avviso in alto non compare"; }
+m="$(msg_after_click "Avvia")"
+look="$(js 'refresh().then(() => __look())')"
+# L'aggiornamento periodico chiama la refresh() originale: questo contatore vede solo la
+# chiamata fatta dall'evento "online".
+js 'window.__onlineRefresh = 0; window.__refresh = window.refresh;
+    window.refresh = function () { window.__onlineRefresh++; return window.__refresh(); }; true' >/dev/null
+ab set offline off >/dev/null
+[[ "$m" == *"Comando non inviato"* ]] || fail "Avvia offline doveva dire che il comando non è partito, ha detto: '$m'"
+expect "offline" "$look" '
+assert u["online"] is False and "offline" in u["offline"].lower(), u
+assert u["state"] == {"status": "error", "account": "error", "logs": "error"}, u["state"]
+assert all("sei offline" in u["note"][k]["text"] for k in u["note"]), u["note"]
+assert u["badge"] == "—", u["badge"]
+'
+ok "offline: avviso in alto, sezioni con «Riprova», Avvia: $m"
+ab wait --fn "document.getElementById('offline-banner').hidden && $all_ok" >/dev/null \
+  || fail "tornata la rete l'avviso doveva sparire e i dati ricaricarsi: $(js '__look()')"
+[[ "$(js 'window.refresh = window.__refresh; window.__onlineRefresh')" -ge 1 ]] \
+  || fail "tornata la rete la pagina non ha ricaricato subito (ha aspettato l'aggiornamento periodico)"
+ok "rete tornata: avviso sparito e sezioni ricaricate subito"
+
+# 3) Bot in ritardo: ultimo ciclo 10 minuti fa con cicli da 60 s (soglia 2 minuti).
+look="$(js '(async () => { window.__fault = { late: 600, loop: 60 }; await refresh(); return __look(); })()')"
+expect "bot in ritardo" "$look" '
+assert u["badge"] == "IN RITARDO" and u["state"]["status"] == "stale", u
+assert "2 minuti" in u["stale"], u["stale"]
+n = u["note"]["status"]
+assert "10 minuti fa" in n["ago"] and n["title"] and not n["alert"], n
+assert u["state"]["account"] == "ok" and u["state"]["logs"] == "ok", u["state"]
+'
+ok "ultimo ciclo 10 minuti fa, cicli da 60 s: badge IN RITARDO ($(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["stale"])' "$look"))"
+# Lo stesso ritardo con cicli da un'ora (soglia 2 ore) non è un ritardo.
+look="$(js '(async () => { window.__fault = { late: 600, loop: 3600 }; await refresh(); return __look(); })()')"
+expect "ciclo da un'ora" "$look" 'assert u["badge"] == "RUNNING" and u["state"]["status"] == "ok" and not u["stale"], u'
+js 'window.__fault = null; window.fetch = window.__realFetch; refresh().then(() => true)' >/dev/null
+ok "lo stesso ritardo con cicli da un'ora: RUNNING, nessun avviso"
+errors="$(ab --json errors | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"]["errors"]))')"
+[[ "$errors" == 0 ]] || { ab errors; fail "errori JavaScript durante le prove delle sezioni: $errors"; }
 
 # ------------------------------------------------------------ Avvia / Ferma
 ab fill '#apikey' '' >/dev/null
