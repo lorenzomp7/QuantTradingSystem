@@ -255,6 +255,16 @@ def round_trip_stats(trades: pd.DataFrame, index: pd.Index | None = None, fee_bp
     Come in Vibe-Trading `win_rate_and_stats`: profit factor e rapporto
     guadagno/perdita sono `None` quando nessun trade ha perso, perché
     dividono per le perdite (0 farebbe sembrare il risultato pessimo).
+
+    Dal riepilogo di TradeTracer (solo la logica), sempre sui netti:
+    * `expectancy_pct` = (vinti / n) · guadagno medio − (persi / n) · |perdita media|;
+    * `accuracy_magnitude_pct` = profitto lordo / (profitto lordo + |perdita lorda|),
+      `accuracy_frequency_pct` = trade vinti / totale (è il win rate);
+    * `max_consecutive_wins`, `best_trade_pct`, `worst_trade_pct`;
+    * `fragility_ratio`: con g = guadagno mediano dei trade vincenti, le perdite
+      di coda sono quelle con |perdita| >= 3·g; fragility = (perdita di coda
+      massima / g) × (n° perdite di coda / n° trade). 0 senza perdite di coda,
+      `None` senza trade vincenti (g non esiste).
     """
     table = round_trip_table(trades, index, fee_bps)
     closed = table[table["status"] == "closed"]
@@ -269,9 +279,23 @@ def round_trip_stats(trades: pd.DataFrame, index: pd.Index | None = None, fee_bp
     gross_loss = abs(sum(losses))
 
     max_consec = cur = 0
+    max_consec_wins = cur_wins = 0
     for p in pnl:
         cur = cur + 1 if p < 0 else 0
         max_consec = max(max_consec, cur)
+        cur_wins = cur_wins + 1 if p > 0 else 0
+        max_consec_wins = max(max_consec_wins, cur_wins)
+
+    gross_profit = sum(wins)
+    expectancy = (len(wins) / n * avg_win - len(losses) / n * abs(avg_loss)) if n else None
+    magnitude = gross_profit / (gross_profit + gross_loss) if n and gross_profit + gross_loss > 1e-12 else None
+
+    fragility = None
+    if wins:
+        median_gain = float(np.median(wins))
+        # Soglia compresa (>=): il margine evita che l'arrotondamento dei float escluda |perdita| = 3·g.
+        tail = [abs(p) for p in losses if abs(p) >= 3 * median_gain - 1e-12]
+        fragility = max(tail) / median_gain * len(tail) / n if tail else 0.0
 
     return {
         "round_trips": n,
@@ -283,5 +307,12 @@ def round_trip_stats(trades: pd.DataFrame, index: pd.Index | None = None, fee_bp
         "profit_loss_ratio": round(avg_win / abs(avg_loss), 4) if losses else None,
         "profit_factor": round(sum(wins) / gross_loss, 4) if gross_loss > 1e-12 else None,
         "max_consecutive_losses": max_consec,
+        "max_consecutive_wins": max_consec_wins,
+        "expectancy_pct": round(expectancy * 100, 4) if expectancy is not None else None,
+        "accuracy_magnitude_pct": round(magnitude * 100, 2) if magnitude is not None else None,
+        "accuracy_frequency_pct": round(len(wins) / n * 100, 2) if n else None,
+        "best_trade_pct": round(max(pnl) * 100, 2) if n else None,
+        "worst_trade_pct": round(min(pnl) * 100, 2) if n else None,
+        "fragility_ratio": round(fragility, 4) if fragility is not None else None,
         "avg_holding_bars": round(sum(holding) / len(holding), 1) if holding else None,
     }

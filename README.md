@@ -123,6 +123,13 @@ trade: ingresso e uscita, prezzi eseguiti, barre, rendimento lordo e **netto**
 all'ultimo close e con la sola commissione d'ingresso; non entra nelle statistiche
 (`open_trades` lo conta). Win rate, guadagno e perdita medi, profit factor e `avg_trade_pct` si
 calcolano sui netti: un trade a +0,05% lordo con 10 bps di commissione è una perdita di 0,15%.
+Sempre sui netti (logica del riepilogo di TradeTracer): `expectancy_pct` = quota di vinti ×
+guadagno medio − quota di persi × |perdita media|; `accuracy_magnitude_pct` = profitto lordo /
+(profitto lordo + |perdita lorda|) e `accuracy_frequency_pct` = vinti / totale;
+`max_consecutive_wins`, `best_trade_pct`, `worst_trade_pct`; `fragility_ratio` = (perdita di coda
+massima / guadagno mediano dei vincenti) × (perdite di coda / trade), dove una perdita è di coda
+se vale almeno 3 guadagni mediani (0 se non ce ne sono). Esempio: +2, +4, +6, −1, −15% →
+expectancy −0,8%, accuracy 42,86% e 60%, fragility 0,75.
 Altre metriche: `exposure_pct` (quota di barre in posizione), `calmar_ratio` (CAGR / |max
 drawdown|), `max_drawdown_duration_bars` (barre consecutive sotto il massimo precedente) e il
 Sortino con la downside deviation standard, `√(media(min(eccesso, 0)²))` su tutte le barre

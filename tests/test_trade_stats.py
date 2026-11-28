@@ -203,3 +203,52 @@ def test_static_and_api_round_trips_equal():
     assert mine["metrics"] == api["metrics"]
     for key in ("avg_trade_pct", "exposure_pct", "calmar_ratio", "max_drawdown_duration_bars", "open_trades"):
         assert key in api["metrics"]
+
+
+# ---------------------------------------------------------------- Punto 33
+def test_tradetracer_five_trades():
+    s = round_trip_stats(_pct_trades([2, 4, 6, -1, -15]))
+    assert s["round_trips"] == 5
+    # expectancy = 3/5 · 4 − 2/5 · 8
+    assert s["expectancy_pct"] == pytest.approx(-0.8, abs=1e-9)
+    # accuracy per entità = 12 / (12 + 16); per frequenza = 3 / 5
+    assert s["accuracy_magnitude_pct"] == pytest.approx(42.86, abs=0.005)
+    assert s["accuracy_frequency_pct"] == pytest.approx(60.0) == s["win_rate_pct"]
+    assert s["max_consecutive_wins"] == 3 and s["max_consecutive_losses"] == 2
+    assert s["best_trade_pct"] == pytest.approx(6.0) and s["worst_trade_pct"] == pytest.approx(-15.0)
+    # guadagno mediano 4; perdite di coda (>= 12): solo −15 -> 15/4 · 1/5
+    assert s["fragility_ratio"] == pytest.approx(0.75, abs=1e-9)
+    # Sono calcolate sui netti: con le commissioni l'expectancy scende di circa due commissioni.
+    net = round_trip_stats(_pct_trades([2, 4, 6, -1, -15]), fee_bps=10)
+    assert net["expectancy_pct"] == pytest.approx(-0.8 - 0.2, abs=0.005)
+    assert net["best_trade_pct"] < 6.0 and net["worst_trade_pct"] < -15.0
+    assert net["expectancy_pct"] == pytest.approx(net["avg_trade_pct"], abs=0.006)
+
+
+def test_fragility_zero_without_tail():
+    # Guadagno mediano 4: una perdita è di coda solo da 12 in su.
+    assert round_trip_stats(_pct_trades([2, 4, 6, -1, -11]))["fragility_ratio"] == 0.0
+    assert round_trip_stats(_pct_trades([2, 4, 6]))["fragility_ratio"] == 0.0
+    # Due perdite di coda: (massima / mediana) × (2 / 6).
+    two = round_trip_stats(_pct_trades([2, 4, 6, -1, -12, -20]))
+    assert two["fragility_ratio"] == pytest.approx(20 / 4 * 2 / 6, abs=1e-4)
+    # Senza vincite il guadagno mediano non esiste; senza trade nessuna statistica.
+    only_losses = round_trip_stats(_pct_trades([-1, -2]))
+    assert only_losses["fragility_ratio"] is None and only_losses["accuracy_magnitude_pct"] == 0.0
+    assert only_losses["expectancy_pct"] == pytest.approx(-1.5) and only_losses["max_consecutive_wins"] == 0
+    none = round_trip_stats(EMPTY)
+    for key in ("expectancy_pct", "accuracy_magnitude_pct", "accuracy_frequency_pct", "best_trade_pct",
+                "worst_trade_pct", "fragility_ratio"):
+        assert none[key] is None, key
+    assert none["max_consecutive_wins"] == 0
+
+
+def test_backtest_metrics_include_trade_quality():
+    data = generate_mock_ohlcv("QUALITY", period="2y")
+    res = MovingAverageCrossover(StrategyParams(short_window=5, long_window=20, fee_bps=10)).backtest(data)
+    m = res.metrics
+    closed = res.round_trips[res.round_trips["status"] == "closed"]["net_pct"]
+    assert m["best_trade_pct"] == pytest.approx(closed.max(), abs=0.006)
+    assert m["worst_trade_pct"] == pytest.approx(closed.min(), abs=0.006)
+    assert m["expectancy_pct"] == pytest.approx(closed.mean(), abs=1e-3)
+    assert m["accuracy_frequency_pct"] == m["win_rate_pct"]
