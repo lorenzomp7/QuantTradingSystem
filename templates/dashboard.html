@@ -31,6 +31,12 @@
   table.costs th { color:var(--muted); font-weight:500; }
   .metric { background:#0b0f14; border-radius:6px; padding:8px; } .metric b { display:block; font-size:18px; } .metric small { color:var(--muted); }
   #msg { font-size:13px; color:var(--muted); min-height:18px; margin-top:8px; }
+  .banner { padding:10px 16px; font-size:14px; background:rgba(239,68,68,.15); color:#fecaca; border-bottom:1px solid var(--border); }
+  .banner.warn { background:rgba(245,158,11,.15); color:#fde68a; }
+  .note { margin-top:10px; font-size:13px; display:flex; flex-wrap:wrap; gap:6px 10px; align-items:center; }
+  .note.error { color:#fca5a5; } .note.stale { color:#fcd34d; } .note .kept { color:var(--muted); }
+  .card[data-state="error"] { border-color:var(--red); } .card[data-state="stale"] { border-color:#f59e0b; }
+  time.ago { cursor:help; }
 </style>
 </head>
 <body>
@@ -38,22 +44,26 @@
   <h1>📈 QuantTradingSystem <span id="badge" class="badge off">—</span></h1>
   <div id="apikey-box" style="flex:1 1 220px; max-width:320px;"><input id="apikey" type="password" placeholder="X-API-Key (endpoint di controllo)"></div>
 </header>
+<div id="offline-banner" class="banner" role="alert" hidden></div>
+<div id="stale-banner" class="banner warn" role="status" hidden></div>
 <main>
   <section class="card">
     <h2>Stato del bot</h2>
-    <div class="kv" id="status"></div>
+    <div class="kv" id="status"><span>Caricamento…</span></div>
+    <div class="note" id="status-note" hidden></div>
     <div class="row" id="controls" style="margin-top:14px;">
       <button onclick="control('start')">▶ Avvia</button>
       <button class="danger" onclick="control('stop')">■ Ferma</button>
       <button class="secondary" onclick="control('run-once')">⟳ Esegui un ciclo</button>
     </div>
     <div id="static-controls" hidden style="margin-top:14px; font-size:13px; color:var(--muted);"></div>
-    <div id="msg"></div>
+    <div id="msg" role="status" aria-live="polite"></div>
   </section>
 
   <section class="card">
     <h2>Account (paper)</h2>
-    <div class="kv" id="account"></div>
+    <div class="kv" id="account"><span>Caricamento…</span></div>
+    <div class="note" id="account-note" hidden></div>
   </section>
 
   <section class="card wide">
@@ -75,6 +85,7 @@
   <section class="card wide">
     <h2>Log</h2>
     <pre id="logs">Caricamento…</pre>
+    <div class="note" id="logs-note" hidden></div>
   </section>
 </main>
 
@@ -88,8 +99,79 @@ try { localStorage.removeItem("qts_api_key"); $("apikey").value = sessionStorage
 $("apikey").addEventListener("change", () => { try { sessionStorage.setItem("qts_api_key", $("apikey").value); } catch (e) {} });
 
 const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// Markup già pronto e sicuro (vedi ago()): kv() non lo ripassa da esc().
+class Markup { constructor(html) { this.html = html; } }
 const kv = (obj) => Object.entries(obj).map(([k, v]) =>
-  `<span>${esc(k)}</span><span>${v === null || v === undefined ? "—" : esc(typeof v === "object" ? JSON.stringify(v) : v)}</span>`).join("");
+  `<span>${esc(k)}</span><span>${v === null || v === undefined ? "—" : v instanceof Markup ? v.html : esc(typeof v === "object" ? JSON.stringify(v) : v)}</span>`).join("");
+
+// --- funzioni pure: inizio (provate con node da tests/test_dashboard_page.py) ---
+// Senza server lo stato si aggiorna a ogni esecuzione pianificata di GitHub Actions, che
+// può partire con molto ritardo: prima di 3 ore non è un problema.
+const STALE_ACTIONS_MS = 3 * 3600 * 1000;
+
+// «3 ore fa», «12 minuti fa»; null se la data non è leggibile. Una data nel futuro
+// (orologi non allineati) vale come adesso.
+function timeAgo(iso, now = Date.now()) {
+  const t = Date.parse(iso);
+  if (!iso || Number.isNaN(t)) return null;
+  const sec = Math.max(0, Math.floor((now - t) / 1000));
+  if (sec < 60) return "pochi secondi fa";
+  const min = Math.floor(sec / 60);
+  if (min < 60) return min === 1 ? "1 minuto fa" : `${min} minuti fa`;
+  const hours = Math.floor(min / 60);
+  if (hours < 24) return hours === 1 ? "1 ora fa" : `${hours} ore fa`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? "1 giorno fa" : `${days} giorni fa`;
+}
+
+// «3 ore», «2 minuti»: per dire la soglia nell'avviso.
+function duration(ms) {
+  const min = Math.round(ms / 60000);
+  if (min < 120 || min % 60) return min === 1 ? "1 minuto" : `${min} minuti`;
+  return `${min / 60} ore`;
+}
+
+// Dopo quanto tempo senza novità il bot è «in ritardo»: senza server 3 ore, con il
+// server due intervalli del ciclo (almeno 2 minuti, per i cicli molto brevi).
+function staleLimitMs(s) {
+  if (s.mode === "github-actions") return STALE_ACTIONS_MS;
+  return Math.max(2 * (Number(s.loop_interval_seconds) || 0) * 1000, 120000);
+}
+
+// null se lo stato è fresco (o il bot è fermo); altrimenti { at, limitMs }, dove `at` è
+// l'ultimo segno di vita: il file di stato senza server, l'ultimo ciclo riuscito o
+// l'avvio (il più recente dei due) con il server.
+function staleSince(s, now = Date.now()) {
+  if (!s || !s.running) return null;
+  const marks = (s.mode === "github-actions" ? [s.written_at] : [s.last_run_at, s.started_at])
+    .filter(x => x && !Number.isNaN(Date.parse(x)));
+  if (!marks.length) return null;
+  const at = marks.reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a));
+  const limitMs = staleLimitMs(s);
+  return now - Date.parse(at) > limitMs ? { at, limitMs } : null;
+}
+
+// Motivo di un caricamento fallito, in parole semplici.
+function errorText(e, online = true) {
+  if (!online) return "sei offline";
+  if (e && e.name === "TypeError") return "rete o server non raggiungibili";   // richiesta mai arrivata
+  return String((e && e.message) || e);
+}
+// --- funzioni pure: fine ---
+
+// Data relativa con la data completa nel tooltip; tickTimes() la tiene aggiornata.
+const fullDate = (iso) => new Date(iso).toLocaleString("it-IT", { dateStyle: "full", timeStyle: "long" });
+function ago(iso, prefix = "") {
+  const rel = timeAgo(iso);
+  if (rel === null) return iso ?? null;   // non è una data: si mostra com'è
+  return new Markup(`<time class="ago" datetime="${esc(iso)}" data-prefix="${esc(prefix)}" title="${esc(fullDate(iso))}">${esc(prefix + rel)}</time>`);
+}
+function tickTimes() {
+  document.querySelectorAll("time.ago").forEach(t => {
+    const rel = timeAgo(t.getAttribute("datetime"));
+    if (rel !== null) t.textContent = (t.dataset.prefix || "") + rel;
+  });
+}
 
 // config.js sceglie la modalità:
 // - window.QTS_API: indirizzo dell'API (VM); vuoto = stesso server FastAPI;
@@ -153,8 +235,9 @@ async function staticGet(path, q) {
   }
   if (path === "/api/logs") {
     const r = await siteFile("state/logs.json");
-    const logs = r.ok ? await r.json() : [];
-    // In ordine cronologico, come /api/logs (refresh() li inverte per mostrare prima i più recenti).
+    if (!r.ok && r.status !== 404) return { ok: false, status: r.status, body: { detail: "log non leggibili" } };
+    const logs = r.ok ? await r.json() : [];   // 404: il bot non ha ancora scritto log
+    // In ordine cronologico, come /api/logs (loadLogs() li inverte per mostrare prima i più recenti).
     return { ok: true, status: 200, body: logs.slice(-Number(q.get("limit") || 100)) };
   }
   const fn = { "/api/backtest": "backtest", "/api/backtest/costs": "costs" }[path];
@@ -177,7 +260,20 @@ async function apiGet(path, q = new URLSearchParams()) {
   if (STATIC) return staticGet(path, q);
   const qs = q.toString();
   const r = await fetch(API_BASE + path + (qs ? "?" + qs : ""));
-  return { ok: r.ok, status: r.status, body: await r.json() };
+  let body;
+  try { body = await r.json(); }
+  catch (e) {   // per esempio la pagina d'errore HTML di un proxy
+    if (r.ok) throw new Error("risposta non leggibile");
+    body = { detail: "risposta non leggibile" };
+  }
+  return { ok: r.ok, status: r.status, body };
+}
+// Come apiGet, ma un errore HTTP diventa un'eccezione: lo mostra la sezione che ha chiesto i dati.
+async function apiData(path, q) {
+  const r = await apiGet(path, q);
+  if (r.ok) return r.body;
+  const d = r.body && r.body.detail;
+  throw new Error(`errore ${r.status}` + (d ? `: ${typeof d === "string" ? d : JSON.stringify(d)}` : ""));
 }
 
 if (STATIC) {
@@ -188,51 +284,175 @@ if (STATIC) {
     "Per un ciclo subito usa «Run workflow»; per fermarlo imposta la variabile del repository BOT_ENABLED a false." + link;
 }
 
-async function refresh() {
-  try {
-    const s = (await apiGet("/api/status")).body;
-    if (!s) {
-      $("badge").textContent = "IN ATTESA"; $("status").innerHTML = kv({ Stato: "il bot non ha ancora completato un ciclo" });
-      $("account").innerHTML = ""; $("logs").textContent = "Nessun log";
-      return;
-    }
-    // Senza server lo stato è quello dell'ultima esecuzione: se è vecchio (cron saltato o
-    // sospeso da GitHub, errori ripetuti) la pagina non deve dire "ATTIVO".
-    const ageH = s.written_at ? (Date.now() - Date.parse(s.written_at)) / 3.6e6 : 0;
-    const late = s.mode === "github-actions" && s.running && ageH > 3;
-    $("badge").textContent = late ? "IN RITARDO" : s.running ? (STATIC ? "ATTIVO" : "RUNNING") : "STOPPED";
-    $("badge").className = "badge " + (s.running && !late ? "on" : "off");
-    const sig = s.last_signal || {};
-    $("status").innerHTML = kv({
-      Simbolo: s.symbol, Strategia: s.strategy,
-      "SMA": `${s.params.short_window} / ${s.params.long_window}`,
-      "Sorgente dati": `${s.data_source} (ultima: ${s.last_data_source_used || "—"})`,
-      Candele: `${s.data_interval} (storico ${s.data_period})`,
-      ...(s.mode === "github-actions"
-        ? { Esecuzione: `GitHub Actions, ${s.schedule}`, "Stato scritto": s.written_at }
-        : { "Intervallo loop": s.loop_interval_seconds + "s" }),
-      Cicli: s.cycles,
-      "Ultimo run": s.last_run_at, "Ultimo segnale": sig.action ? `${sig.action} @ ${sig.close}` : null,
-      "Ordini sospesi": (s.data && s.data.orders_blocked) || null,
-      Errore: s.last_error,
-    });
-    const a = s.account || {};
-    $("account").innerHTML = kv({ Broker: a.broker, Cash: a.cash, "Valore posizioni": a.market_value,
-      Equity: a.equity, "P&L": a.pnl, Posizioni: a.positions,
-      Ordini: (a.order_counts || {}).filled ?? (a.orders || []).length,
-      Rifiutati: (a.order_counts || {}).rejected || null });
+// Ogni sezione ha il suo stato: idle → loading → ok | stale | error. Un errore resta nella
+// sezione che l'ha avuto (messaggio e «Riprova»), le altre continuano ad aggiornarsi.
+const sections = {};
+const LABELS = { status: "Stato del bot", account: "Account", logs: "Log" };
+const RETRY = {};   // id → cosa ricarica «Riprova»
 
-    const logs = (await apiGet("/api/logs", new URLSearchParams({ limit: 100 }))).body;
-    $("logs").textContent = logs.reverse().map(l => `${l.timestamp.slice(0,19)} ${l.level.padEnd(7)} ${l.message}`).join("\n") || "Nessun log";
-  } catch (e) { $("msg").textContent = "Errore di aggiornamento: " + e; }
+function setState(id, state, text = "", when = null) {
+  const sec = sections[id], note = $(id + "-note");
+  sec.state = state;
+  $(id).closest("section").dataset.state = state;
+  const button = note.querySelector("button");
+  if (state === "loading") {   // l'avviso di prima resta finché non arriva la risposta
+    if (button) { button.disabled = true; button.textContent = "Riprovo…"; }
+    return;
+  }
+  const key = [state, text, when && when.iso].join("|");
+  if (key === sec.noteKey) {   // stesso avviso di prima: non si riscrive, così non viene riletto
+    if (button) { button.disabled = false; button.textContent = "Riprova"; }
+    return;
+  }
+  sec.noteKey = key;
+  note.className = "note " + state;
+  note.textContent = "";
+  note.hidden = state === "ok";
+  if (state === "ok") return;
+  const msg = document.createElement("span");
+  msg.textContent = text;
+  if (state === "error") msg.setAttribute("role", "alert");
+  note.append(msg);
+  if (when && timeAgo(when.iso) !== null) {   // fuori dall'avviso: l'ora cambia senza farlo rileggere
+    const kept = document.createElement("span");
+    kept.className = "kept";
+    kept.innerHTML = ago(when.iso, when.prefix).html;
+    note.append(kept);
+  }
+  if (state === "error") {
+    const retry = document.createElement("button");
+    retry.type = "button"; retry.className = "secondary"; retry.textContent = "Riprova";
+    retry.setAttribute("aria-label", `Riprova: ${LABELS[id]}`);
+    retry.addEventListener("click", () => RETRY[id]());
+    note.append(retry);
+  }
 }
 
+// fn() scarica i dati e restituisce la funzione che li disegna in $(id); questa può
+// restituire { text, when } se i dati ci sono ma sono vecchi (stato stale).
+// Non lancia mai: restituisce lo stato finale della sezione.
+async function loadSection(id, fn) {
+  const sec = sections[id] || (sections[id] = { state: "idle", loaded: false, at: null, seq: 0, noteKey: "" });
+  const seq = ++sec.seq;
+  setState(id, "loading");
+  let why;
+  try {
+    let draw;
+    try { draw = await fn(); }
+    catch (e) { why = errorText(e, navigator.onLine !== false); throw e; }
+    if (seq !== sec.seq) return sec.state;   // è già partita una richiesta più recente: decide lei
+    let old;
+    try { old = draw(); }
+    catch (e) { why = `dati non leggibili: ${(e && e.message) || e}`; throw e; }
+    sec.loaded = true; sec.at = new Date().toISOString();
+    setState(id, old ? "stale" : "ok", old ? old.text : "", old ? old.when : null);
+  } catch (e) {
+    if (seq !== sec.seq) return sec.state;
+    if (!sec.loaded) $(id).textContent = "—";
+    setState(id, "error", `${LABELS[id]}: caricamento non riuscito (${why}).`,
+      sec.at ? { iso: sec.at, prefix: "Dati mostrati: aggiornati " } : null);
+  }
+  return sec.state;
+}
+
+function drawStatus(s) {
+  const badge = $("badge"), banner = $("stale-banner");
+  if (!s) {
+    badge.textContent = "IN ATTESA"; badge.className = "badge off"; banner.hidden = true;
+    $("status").innerHTML = kv({ Stato: "il bot non ha ancora completato un ciclo" });
+    return null;
+  }
+  // Uno stato vecchio (cron saltato o sospeso da GitHub, cicli che falliscono o si bloccano
+  // sul server) non deve far dire "ATTIVO" alla pagina.
+  const late = staleSince(s);
+  badge.textContent = late ? "IN RITARDO" : s.running ? (STATIC ? "ATTIVO" : "RUNNING") : "STOPPED";
+  badge.className = "badge " + (s.running && !late ? "on" : "off");
+  const sig = s.last_signal || {};
+  const actions = s.mode === "github-actions";
+  $("status").innerHTML = kv({
+    Simbolo: s.symbol, Strategia: s.strategy,
+    "SMA": `${s.params.short_window} / ${s.params.long_window}`,
+    "Sorgente dati": `${s.data_source} (ultima: ${s.last_data_source_used || "—"})`,
+    Candele: `${s.data_interval} (storico ${s.data_period})`,
+    ...(actions
+      ? { Esecuzione: `GitHub Actions, ${s.schedule}`, "Stato scritto": ago(s.written_at, "aggiornato ") }
+      : { "Intervallo loop": s.loop_interval_seconds + "s" }),
+    Cicli: s.cycles,
+    "Ultimo run": ago(s.last_run_at), "Ultimo segnale": sig.action ? `${sig.action} @ ${sig.close}` : null,
+    "Ordini sospesi": (s.data && s.data.orders_blocked) || null,
+    Errore: s.last_error,
+  });
+  const text = late ? (actions ? "Dati vecchi: il bot su GitHub Actions non aggiorna lo stato da più di "
+                               : "Bot in ritardo: nessun ciclo completato da più di ") + duration(late.limitMs) + "." : "";
+  if (banner.textContent !== text) banner.textContent = text;   // riscritto solo se cambia: niente annunci ripetuti
+  banner.hidden = !late;
+  return late ? { text: actions ? "Dati vecchi." : "Bot in ritardo.",
+                  when: { iso: late.at, prefix: actions ? "Stato scritto " : "Ultimo segno di vita: " } } : null;
+}
+
+function drawAccount(s) {
+  const a = (s && s.account) || null;
+  $("account").innerHTML = a ? kv({ Broker: a.broker, Cash: a.cash, "Valore posizioni": a.market_value,
+    Equity: a.equity, "P&L": a.pnl, Posizioni: a.positions,
+    Ordini: (a.order_counts || {}).filled ?? (a.orders || []).length,
+    Rifiutati: (a.order_counts || {}).rejected || null }) : "";
+  return null;
+}
+
+// Stato e account arrivano dalla stessa risposta: una richiesta sola, due sezioni.
+function loadBot() {
+  const status = apiData("/api/status");
+  return Promise.all([
+    loadSection("status", async () => { const s = await status; return () => drawStatus(s); }).then(state => {
+      // Senza lo stato non si sa se il bot è acceso: il badge non deve continuare a dirlo.
+      if (state === "error") { $("badge").textContent = "—"; $("badge").className = "badge off"; }
+      return state;
+    }),
+    loadSection("account", async () => { const s = await status; return () => drawAccount(s); }),
+  ]);
+}
+
+function loadLogs() {
+  return loadSection("logs", async () => {
+    const logs = await apiData("/api/logs", new URLSearchParams({ limit: 100 }));
+    return () => {
+      $("logs").textContent = [...logs].reverse().map(l => `${l.timestamp.slice(0,19)} ${l.level.padEnd(7)} ${l.message}`).join("\n") || "Nessun log";
+      return null;
+    };
+  });
+}
+
+RETRY.status = RETRY.account = loadBot;
+RETRY.logs = loadLogs;
+
+// Restituisce una Promise che si chiude quando tutte le sezioni hanno finito (bene o male).
+function refresh() {
+  tickTimes();
+  return Promise.all([loadBot(), loadLogs()]);
+}
+
+// Avviso in alto quando il browser dice di essere offline; al ritorno della rete sparisce
+// e i dati si ricaricano subito, senza aspettare il prossimo giro.
+function showOffline() {
+  const off = navigator.onLine === false, banner = $("offline-banner");
+  banner.textContent = off ? "Sembri offline. Controlla la connessione: i dati qui sotto potrebbero non essere aggiornati." : "";
+  banner.hidden = !off;
+}
+window.addEventListener("offline", showOffline);
+window.addEventListener("online", () => { showOffline(); refresh(); });
+
 async function control(action) {
-  $("msg").textContent = "…";
-  const r = await fetch(`${API_BASE}/api/bot/${action}`, { method: "POST", headers: { "X-API-Key": $("apikey").value } });
-  const body = await r.json();
-  $("msg").textContent = r.ok ? (body.detail || `${body.action} @ ${body.close}`) : `Errore ${r.status}: ${body.detail}`;
-  refresh();
+  const msg = $("msg");
+  msg.textContent = "…";
+  try {
+    const r = await fetch(`${API_BASE}/api/bot/${action}`, { method: "POST", headers: { "X-API-Key": $("apikey").value } });
+    let body = {};
+    try { body = await r.json(); } catch (e) {}   // errore senza JSON (proxy): resta il codice HTTP
+    msg.textContent = r.ok ? (body.detail || `${body.action} @ ${body.close}`) : `Errore ${r.status}: ${body.detail || "risposta non leggibile"}`;
+  } catch (e) {
+    msg.textContent = `Comando non inviato (${errorText(e, navigator.onLine !== false)}). Controlla la connessione e riprova.`;
+  }
+  return refresh();
 }
 
 async function backtest() {
@@ -297,7 +517,7 @@ async function costs(q) {
 }
 
 // Senza server lo stato cambia al massimo a ogni esecuzione pianificata: basta un controllo al minuto.
-refresh(); backtest(); setInterval(refresh, STATIC ? 60000 : 10000);
+showOffline(); refresh(); backtest(); setInterval(refresh, STATIC ? 60000 : 10000);
 </script>
 </body>
 </html>
