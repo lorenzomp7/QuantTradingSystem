@@ -114,6 +114,21 @@ scarica storico in più: con `period=1y` e SMA 50 le barre valutate sono circa 2
 server) esegue al close della barra del segnale, P(t) = close(t-1): è il «cheat-on-close» di
 Backtrader, tenuto solo per confronto con i risultati precedenti.
 
+### Trade e metriche
+
+`BacktestResult.round_trips` (e `round_trips` nella risposta di `/api/backtest`) è la tabella dei
+trade: ingresso e uscita, prezzi eseguiti, barre, rendimento lordo e **netto**
+`(P_out / P_in)·(1 − c)² − 1`, PnL e commissioni in valuta, quantità, MAE/MFE da minimi e massimi,
+`status`. Il trade ancora aperto a fine periodo c'è, con `status = "open"`, valorizzato
+all'ultimo close e con la sola commissione d'ingresso; non entra nelle statistiche
+(`open_trades` lo conta). Win rate, guadagno e perdita medi, profit factor e `avg_trade_pct` si
+calcolano sui netti: un trade a +0,05% lordo con 10 bps di commissione è una perdita di 0,15%.
+Altre metriche: `exposure_pct` (quota di barre in posizione), `calmar_ratio` (CAGR / |max
+drawdown|), `max_drawdown_duration_bars` (barre consecutive sotto il massimo precedente) e il
+Sortino con la downside deviation standard, `√(media(min(eccesso, 0)²))` su tutte le barre
+(prima era la deviazione standard dei soli rendimenti negativi: sul mock SPY SMA 20/50 passa
+da 0,13 a 0,16, sul mock BTC-USD da 1,897 a 1,899).
+
 ### Endpoint di controllo protetti
 
 `POST /api/bot/*` richiede l'header `X-API-Key: <CONTROL_API_KEY>` quando la

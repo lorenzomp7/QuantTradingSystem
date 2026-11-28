@@ -34,7 +34,7 @@ from dataclasses import asdict, dataclass, field
 import numpy as np
 import pandas as pd
 
-from strategy.metrics import DEFAULT_BARS_PER_YEAR, effective_bars_per_year, round_trip_stats
+from strategy.metrics import DEFAULT_BARS_PER_YEAR, effective_bars_per_year, round_trip_stats, round_trip_table
 
 # Valore storico, lasciato per compatibilità: le metriche ora usano il numero
 # di barre l'anno del mercato e dell'intervallo (vedi strategy/metrics.py).
@@ -85,6 +85,8 @@ class BacktestResult:
     signals: pd.DataFrame = field(repr=False)
     # Buy & Hold sullo stesso periodo, capitale e regola d'esecuzione della strategia.
     benchmark_curve: pd.Series | None = field(default=None, repr=False)
+    # Tabella dei trade (`metrics.round_trip_table`): netti di commissioni, quello aperto compreso.
+    round_trips: pd.DataFrame | None = field(default=None, repr=False)
 
     def to_dict(self, tail: int | None = None) -> dict:
         """
@@ -96,6 +98,10 @@ class BacktestResult:
         barra): quando è 0 la strategia è in liquidità e l'equity resta
         piatta, cosa che la dashboard evidenzia. La curva parte dalla prima
         barra valutata: il riscaldamento degli indicatori non c'è.
+
+        `trades` elenca le singole esecuzioni (BUY e SELL); `round_trips` i
+        trade completi con rendimento netto, PnL, commissioni, MAE/MFE e
+        `status` ("closed" o "open" per quello ancora aperto a fine periodo).
         """
         eq = self.equity_curve if tail is None else self.equity_curve.tail(tail)
         benchmark = self.benchmark_curve
@@ -122,7 +128,31 @@ class BacktestResult:
                 }
                 for d, row in self.trades.iterrows()
             ],
+            "round_trips": self._round_trips_json(),
         }
+
+    def _round_trips_json(self) -> list[dict]:
+        """Tabella dei trade per il JSON: date come stringhe, numeri arrotondati, vuoti = None."""
+        if self.round_trips is None:
+            return []
+        digits = {"entry_price": 4, "exit_price": 4, "gross_pct": 4, "net_pct": 4, "pnl": 2, "fees": 2,
+                  "quantity": 6, "mae_pct": 4, "mfe_pct": 4}
+        out = []
+        for row in self.round_trips.to_dict("records"):
+            item = {}
+            for key, value in row.items():
+                if key in ("entry_time", "exit_time"):
+                    item[key] = value.strftime("%Y-%m-%d") if pd.notna(value) else None
+                elif key == "status":
+                    item[key] = value
+                elif pd.isna(value):
+                    item[key] = None
+                elif key == "bars":
+                    item[key] = int(value)
+                else:
+                    item[key] = round(float(value), digits[key])
+            out.append(item)
+        return out
 
 
 # ============================================================== Strategie
@@ -247,6 +277,14 @@ class BaseStrategy(ABC):
             initial_capital=p.initial_capital,
             risk_free_rate=p.risk_free_rate,
             bars_per_year=bars_per_year,
+            fee_bps=p.fee_bps,
+            positions=held,
+        )
+        round_trips = round_trip_table(
+            trades, equity.index, p.fee_bps, initial_capital=p.initial_capital,
+            high=sig["high"].iloc[t0:] if "high" in sig.columns else None,
+            low=sig["low"].iloc[t0:] if "low" in sig.columns else None,
+            close=close, execution=execution,
         )
         metrics["warmup_bars"] = warmup
         metrics["data_start"] = sig.index[0].strftime("%Y-%m-%d")
@@ -258,7 +296,7 @@ class BaseStrategy(ABC):
         metrics["strategy"] = self.name
         metrics["params"] = asdict(p)
         return BacktestResult(metrics=metrics, equity_curve=equity, trades=trades, signals=sig,
-                              benchmark_curve=benchmark)
+                              benchmark_curve=benchmark, round_trips=round_trips)
 
 
 class MovingAverageCrossover(BaseStrategy):
@@ -400,6 +438,8 @@ def compute_metrics(
     initial_capital: float,
     risk_free_rate: float = 0.0,
     bars_per_year: int | None = None,
+    fee_bps: float = 0.0,
+    positions: pd.Series | None = None,
 ) -> dict:
     """
     Metriche di performance standard.
@@ -409,6 +449,14 @@ def compute_metrics(
     le serie di cui non si conosce il mercato. `asset_returns` sono i
     rendimenti per barra del benchmark sullo stesso periodo: il backtest passa
     quelli del Buy & Hold con commissione d'ingresso.
+
+    Le statistiche per trade sono nette di `fee_bps` (ingresso e uscita).
+    `positions` è la posizione detenuta per barra e serve a `exposure_pct`
+    (quota di barre con posizione; `None` se non è data). Sortino con la
+    downside deviation standard, `√(media(min(eccesso, 0)²))` su tutte le
+    barre; Calmar = CAGR / |max drawdown| (`None` senza drawdown);
+    `max_drawdown_duration_bars` = numero massimo di barre consecutive con
+    l'equity sotto il massimo precedente.
     """
     n = len(strategy_returns)
     bpy = int(bars_per_year) if bars_per_year else effective_bars_per_year(strategy_returns.index)
@@ -423,20 +471,23 @@ def compute_metrics(
     std = excess.std(ddof=0)
     sharpe = float(excess.mean() / std * np.sqrt(bpy)) if std > 0 else 0.0
 
-    downside = excess[excess < 0].std(ddof=0)
-    sortino = (
-        float(excess.mean() / downside * np.sqrt(bpy))
-        if downside and downside > 0 else 0.0
-    )
+    downside = float(np.sqrt((excess.clip(upper=0.0) ** 2).mean())) if n else 0.0
+    sortino = float(excess.mean() / downside * np.sqrt(bpy)) if downside > 0 else 0.0
 
     running_max = equity.cummax()
     drawdown = equity / running_max - 1
     max_dd = float(drawdown.min()) if n else 0.0
+    calmar = cagr / abs(max_dd) if max_dd < 0 else None
+    dd_duration = run = 0
+    for under in (equity < running_max).to_numpy():
+        run = run + 1 if under else 0
+        dd_duration = max(dd_duration, run)
+    exposure = float((positions != 0).mean()) if positions is not None and len(positions) else None
 
     buy_hold = float((1 + asset_returns).prod() - 1)
 
-    # Statistiche sui round-trip completi (BUY -> SELL), al lordo dei costi.
-    rt = round_trip_stats(trades, equity.index)
+    # Statistiche sui round-trip completi (BUY -> SELL), al netto delle commissioni.
+    rt = round_trip_stats(trades, equity.index, fee_bps)
 
     return {
         "start": strategy_returns.index[0].strftime("%Y-%m-%d") if n else None,
@@ -451,6 +502,9 @@ def compute_metrics(
         "sharpe_ratio": round(sharpe, 3),
         "sortino_ratio": round(sortino, 3),
         "max_drawdown_pct": round(max_dd * 100, 2),
+        "max_drawdown_duration_bars": int(dd_duration),
+        "calmar_ratio": round(calmar, 3) if calmar is not None else None,
+        "exposure_pct": round(exposure * 100, 2) if exposure is not None else None,
         "buy_and_hold_return_pct": round(buy_hold * 100, 2),
         "num_trades": int(len(trades)),
         **rt,

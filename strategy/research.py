@@ -156,7 +156,7 @@ def _window_metrics(strategy: BaseStrategy, data: pd.DataFrame, start: int, stop
     m = compute_metrics(
         strategy_returns=w.returns, asset_returns=w.asset_returns, equity=equity,
         trades=_window_trades(w), initial_capital=p.initial_capital, risk_free_rate=p.risk_free_rate,
-        bars_per_year=bars_per_year,
+        bars_per_year=bars_per_year, fee_bps=p.fee_bps, positions=w.positions,
     )
     return m, w
 
